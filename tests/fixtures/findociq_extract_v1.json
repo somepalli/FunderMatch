@@ -1,0 +1,19 @@
+{
+  "contract_version": "1.0",
+  "question": "Extract FY2025 revenue",
+  "figures": [
+    {
+      "label": "Revenue",
+      "value": "10",
+      "unit": "INR crore",
+      "period": "FY2025",
+      "citation": {
+        "document_id": "sample-document",
+        "page_number": 2,
+        "bbox": {"x0": 43.2, "y0": 100.0, "x1": 554.1, "y1": 130.0}
+      }
+    }
+  ],
+  "notes": ["Synthetic contract fixture"]
+}
+

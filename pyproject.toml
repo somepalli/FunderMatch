@@ -1,0 +1,36 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fundermatch"
+version = "0.1.0"
+description = "Human-decided, rule-gated funder matching with precedent retrieval"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+license = { text = "Apache-2.0" }
+dependencies = [
+  "httpx==0.28.1",
+  "pydantic==2.10.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest==8.3.4",
+  "ruff==0.9.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fundermatch"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
