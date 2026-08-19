@@ -7,7 +7,7 @@ from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from fundermatch.precedent.schema import FinancialProfile
+from fundermatch.precedent.schema import EvidenceMetric, FinancialProfile
 
 
 class RuleCriterion(StrEnum):
@@ -28,8 +28,21 @@ class BorrowerApplication(BaseModel):
     industry: str = Field(min_length=1)
     region: str = Field(min_length=1)
     profile: FinancialProfile
+    evidence: tuple[EvidenceMetric, ...] = Field(min_length=3, max_length=3)
     finance_context: str = Field(min_length=1, max_length=2000)
     operations_context: str = Field(min_length=1, max_length=2000)
+
+    @model_validator(mode="after")
+    def validate_evidence(self) -> BorrowerApplication:
+        metrics = {metric.name: metric.value for metric in self.evidence}
+        expected = {
+            "annual_revenue_crore": self.profile.annual_revenue_crore,
+            "ebitda_margin_pct": self.profile.ebitda_margin_pct,
+            "dscr": self.profile.dscr,
+        }
+        if metrics != expected:
+            raise ValueError("application evidence must match its normalized profile")
+        return self
 
     def profile_text(self) -> str:
         profile = self.profile

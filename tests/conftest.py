@@ -43,6 +43,7 @@ def _application(
         industry=precedent.industry,
         region=precedent.region,
         profile=profile,
+        evidence=precedent.evidence,
         finance_context=context,
         operations_context=context,
     )

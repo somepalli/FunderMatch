@@ -6,7 +6,7 @@ extraction only through FinDocIQ's versioned HTTP contract.
 
 ## Current status
 
-Phases 0–2 are implemented:
+Phases 0–3 are implemented:
 
 - async HTTP-only `FinDocIQClient`;
 - local Pydantic copy of `/extract` contract version `1.0`;
@@ -27,6 +27,12 @@ Phases 0–2 are implemented:
 - eligible-only Qdrant payload filtering across `profile_vec` and
   `comments_vec`;
 - deterministic weighted ranking and an explicit no-close-precedent threshold.
+- advisory-only suggestion bundles with no decision field or authority;
+- click-to-source borrower and precedent evidence on every normalized figure;
+- per-precedent similarity factors, finance/operations comments, and historical
+  human outcomes;
+- an optional pinned Gemma 3 narrative adapter with temperature 0, fixed seed,
+  a prompt file, structured JSON output, and post-generation authority guards.
 
 The synthetic corpus demonstrates the mechanism only. It supports no matching
 accuracy, credit-quality, or fair-lending claim.
@@ -112,9 +118,43 @@ uv run --extra retrieval fundermatch-match-precedents `
   --model-dir C:\path\to\pinned\bge-m3-snapshot
 ```
 
-This stage returns precedent evidence, not a credit decision. Phase 3 may use
-the eligible results to assemble a suggestion, but only a human can approve or
-reject an application.
+This stage returns precedent evidence, not a credit decision. Phase 3 uses the
+eligible results to assemble an advisory bundle, but only a human can approve
+or reject an application.
+
+## Advisory suggestion assembly
+
+Phase 3 partitions every configured funder into either an eligible advisory
+candidate or an excluded funder with explicit failed checks. Each candidate
+contains its passed rules, close precedents, similarity factors, historical
+finance and operations comments, historical human outcome, and complete source
+evidence. A candidate with no close precedent remains visible with an explicit
+evidence-gap flag.
+
+Run live BGE/Qdrant retrieval and deterministic assembly while vLLM is stopped
+to leave GPU memory available for BGE-M3:
+
+```powershell
+uv run --extra retrieval fundermatch-suggest `
+  --case-id SYN-001 `
+  --qdrant-url http://127.0.0.1:6999 `
+  --model-dir C:\path\to\pinned\bge-m3-snapshot
+```
+
+Gemma narrative generation is a separate optional step so the 12 GB laptop GPU
+does not need BGE-M3 and Gemma 3 12B resident together. With vLLM running:
+
+```powershell
+uv run --extra retrieval fundermatch-narrative-smoke `
+  --case-id SYN-001 `
+  --base-url http://127.0.0.1:8900/v1
+```
+
+The prompt is stored in `prompts/suggestion_narrative_system.txt`. The adapter
+uses the pinned Gemma revision, temperature `0`, seed `17`, and a strict JSON
+schema. Generated language that attempts to recommend approval or rejection is
+rejected after generation. The bundle always declares `authority:
+advisory_only` and `requires_human_decision: true`.
 
 ## Product controls
 

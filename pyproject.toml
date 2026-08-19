@@ -27,7 +27,9 @@ dev = [
 
 [project.scripts]
 fundermatch-match-precedents = "fundermatch.matching.cli:main"
+fundermatch-narrative-smoke = "fundermatch.suggest.narrative_cli:main"
 fundermatch-seed-precedents = "fundermatch.precedent.cli:main"
+fundermatch-suggest = "fundermatch.suggest.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fundermatch"]

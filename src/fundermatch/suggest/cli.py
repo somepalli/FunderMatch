@@ -1,4 +1,4 @@
-"""Run an eligibility-first retrieval smoke against the local precedent corpus."""
+"""Run live retrieval and assemble an advisory-only suggestion bundle."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from fundermatch.precedent.corpus import load_cases
 from fundermatch.precedent.embedder import BgeM3Config, BgeM3Embedder
 from fundermatch.rules.config import load_policies
 from fundermatch.rules.schema import BorrowerApplication
+from fundermatch.suggest.assembler import SuggestionAssembler
 
 
 def main() -> None:
@@ -34,7 +35,7 @@ def main() -> None:
     if source is None:
         raise SystemExit(f"unknown synthetic case ID: {args.case_id}")
     application = BorrowerApplication(
-        application_id=f"SMOKE-{source.case_id}",
+        application_id=f"SUGGEST-{source.case_id}",
         borrower_name=f"New synthetic applicant aligned to {source.case_id}",
         industry=source.industry,
         region=source.region,
@@ -43,13 +44,14 @@ def main() -> None:
         finance_context="Figures reconcile and require independent human review.",
         operations_context="Operating history requires independent human review.",
     )
-    retriever = RuleGatedPrecedentRetriever(
+    policies = load_policies(args.policies)
+    retrieval = RuleGatedPrecedentRetriever(
         client=QdrantClient(url=args.qdrant_url),
         embedder=BgeM3Embedder(BgeM3Config(snapshot_dir=args.model_dir)),
         config=RetrievalConfig(
             collection=args.collection,
             min_score=args.min_score,
         ),
-    )
-    result = retriever.retrieve(application, load_policies(args.policies))
-    print(result.model_dump_json(indent=2))
+    ).retrieve(application, policies)
+    bundle = SuggestionAssembler().assemble(application, policies, retrieval)
+    print(bundle.model_dump_json(indent=2))
