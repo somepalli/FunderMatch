@@ -84,9 +84,7 @@ def test_client_rejects_a_response_without_bbox_provenance() -> None:
 
 def test_client_hides_upstream_error_details() -> None:
     async def scenario() -> None:
-        transport = httpx.MockTransport(
-            lambda _: httpx.Response(503, text="private model failure")
-        )
+        transport = httpx.MockTransport(lambda _: httpx.Response(503, text="private model failure"))
         async with httpx.AsyncClient(
             transport=transport, base_url="http://findociq:8989"
         ) as http_client:
@@ -102,9 +100,6 @@ def test_client_hides_upstream_error_details() -> None:
 
 
 def test_source_tree_has_no_findociq_package_imports() -> None:
-    source = "\n".join(
-        path.read_text(encoding="utf-8")
-        for path in (ROOT / "src").rglob("*.py")
-    )
+    source = "\n".join(path.read_text(encoding="utf-8") for path in (ROOT / "src").rglob("*.py"))
     assert "from findociq" not in source
     assert "import findociq" not in source

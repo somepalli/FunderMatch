@@ -58,4 +58,3 @@ class ExtractResponse(BaseModel):
     question: str = Field(min_length=1)
     figures: tuple[ExtractedFigure, ...] = Field(min_length=1)
     notes: tuple[str, ...] = ()
-

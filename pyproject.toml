@@ -12,13 +12,20 @@ license = { text = "Apache-2.0" }
 dependencies = [
   "httpx==0.28.1",
   "pydantic==2.10.3",
+  "qdrant-client==1.18.0",
 ]
 
 [project.optional-dependencies]
+retrieval = [
+  "FlagEmbedding==1.4.0",
+]
 dev = [
   "pytest==8.3.4",
   "ruff==0.9.10",
 ]
+
+[project.scripts]
+fundermatch-seed-precedents = "fundermatch.precedent.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fundermatch"]
@@ -33,4 +40,3 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
-

@@ -13,9 +13,7 @@ from fundermatch.clients.findociq_contract import ExtractRequest
 async def smoke(base_url: str, question: str, question_id: str | None) -> None:
     config = FinDocIQClientConfig(base_url=base_url)
     async with FinDocIQClient(config) as client:
-        result = await client.extract(
-            ExtractRequest(question=question, question_id=question_id)
-        )
+        result = await client.extract(ExtractRequest(question=question, question_id=question_id))
     print(result.model_dump_json(indent=2))
 
 

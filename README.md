@@ -6,7 +6,7 @@ extraction only through FinDocIQ's versioned HTTP contract.
 
 ## Current status
 
-Phase 0 is implemented at the contract-test level:
+Phase 0 is complete and Phase 1 is implemented:
 
 - async HTTP-only `FinDocIQClient`;
 - local Pydantic copy of `/extract` contract version `1.0`;
@@ -14,15 +14,22 @@ Phase 0 is implemented at the contract-test level:
 - tests for valid responses, missing provenance, upstream failures, and the
   prohibition on importing FinDocIQ internals;
 - a live smoke command for a running FinDocIQ service.
+- a typed, wholly invented corpus of 20 human-decided loan cases;
+- internally consistent financial evidence with synthetic
+  `(document_id, page_number, bbox)` provenance;
+- separate finance and operations comments plus an explicit human outcome;
+- Qdrant loading through `profile_vec` and `comments_vec` named vectors;
+- pinned BGE-M3 vectorization for the real seed command;
+- fixtures for aligned precedent, similar-but-hard-rule-ineligible, and
+  no-close-precedent scenarios.
 
-A real-model smoke run still requires FinDocIQ's indexed corpus, Qdrant, vLLM,
-and configured open-weight models to be running. Phase 1 must not start until
-that integration smoke passes.
+The synthetic corpus demonstrates the mechanism only. It supports no matching
+accuracy, credit-quality, or fair-lending claim.
 
 ## Setup
 
 ```powershell
-uv sync --extra dev
+uv sync --extra dev --extra retrieval
 uv run pytest
 uv run ruff check .
 ```
@@ -50,6 +57,30 @@ uv run python scripts/smoke_findociq.py `
   --question "Extract FY2025 revenue" `
   --question-id "phase0-smoke"
 ```
+
+## Synthetic precedent corpus
+
+Regenerate and validate the deterministic corpus:
+
+```powershell
+uv run python scripts/generate_synthetic_corpus.py
+uv run pytest
+```
+
+With Qdrant available on the shared conflict-free host port `6999`, load the
+20 cases with pinned BGE-M3 embeddings:
+
+```powershell
+uv run --extra retrieval fundermatch-seed-precedents `
+  --qdrant-url http://127.0.0.1:6999 `
+  --collection fundermatch_precedents `
+  --recreate
+```
+
+Each Qdrant point stores the complete typed case as payload and two cosine
+vectors: `profile_vec` for normalized borrower facts and `comments_vec` for
+finance/operations reviews plus the authoritative human outcome. Phase 2 will
+apply deterministic eligibility rules before querying these precedents.
 
 ## Product controls
 

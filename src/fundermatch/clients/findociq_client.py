@@ -65,4 +65,3 @@ class FinDocIQClient:
             raise FinDocIQContractError(
                 "FinDocIQ returned an invalid extraction contract"
             ) from error
-
