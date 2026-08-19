@@ -12,6 +12,7 @@ license = { text = "Apache-2.0" }
 dependencies = [
   "httpx==0.28.1",
   "pydantic==2.10.3",
+  "PyYAML==6.0.3",
   "qdrant-client==1.18.0",
 ]
 
@@ -25,6 +26,7 @@ dev = [
 ]
 
 [project.scripts]
+fundermatch-match-precedents = "fundermatch.matching.cli:main"
 fundermatch-seed-precedents = "fundermatch.precedent.cli:main"
 
 [tool.hatch.build.targets.wheel]

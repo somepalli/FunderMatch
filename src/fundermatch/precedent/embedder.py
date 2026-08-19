@@ -35,6 +35,11 @@ class BgeM3Embedder:
     def embed_comments(self, cases: tuple[DecidedLoanCase, ...]) -> list[list[float]]:
         return self._encode([case.comments_text() for case in cases])
 
+    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """Embed Phase 2 application text with the same pinned dense model."""
+
+        return self._encode(texts)
+
     def _encode(self, texts: list[str]) -> list[list[float]]:
         output = self._get_model().encode(
             texts,

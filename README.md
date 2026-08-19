@@ -6,7 +6,7 @@ extraction only through FinDocIQ's versioned HTTP contract.
 
 ## Current status
 
-Phase 0 is complete and Phase 1 is implemented:
+Phases 0–2 are implemented:
 
 - async HTTP-only `FinDocIQClient`;
 - local Pydantic copy of `/extract` contract version `1.0`;
@@ -22,6 +22,11 @@ Phase 0 is complete and Phase 1 is implemented:
 - pinned BGE-M3 vectorization for the real seed command;
 - fixtures for aligned precedent, similar-but-hard-rule-ineligible, and
   no-close-precedent scenarios.
+- typed YAML funder policies with seven independently reported hard checks;
+- deterministic eligibility evaluation before any vector query;
+- eligible-only Qdrant payload filtering across `profile_vec` and
+  `comments_vec`;
+- deterministic weighted ranking and an explicit no-close-precedent threshold.
 
 The synthetic corpus demonstrates the mechanism only. It supports no matching
 accuracy, credit-quality, or fair-lending claim.
@@ -79,8 +84,37 @@ uv run --extra retrieval fundermatch-seed-precedents `
 
 Each Qdrant point stores the complete typed case as payload and two cosine
 vectors: `profile_vec` for normalized borrower facts and `comments_vec` for
-finance/operations reviews plus the authoritative human outcome. Phase 2 will
-apply deterministic eligibility rules before querying these precedents.
+finance/operations reviews plus the authoritative human outcome.
+
+## Eligibility-first precedent retrieval
+
+Funder policies live in `configs/funder_policies.yaml` and are validated through
+Pydantic before use. The project deliberately uses a small typed Python rules
+engine instead of Drools: the current policy language is seven fixed membership
+or numeric comparisons, and adding a JVM would not improve expressiveness or
+auditability. Each comparison returns its actual value, requirement, and pass
+state.
+
+The matching pipeline always follows this order:
+
+1. Evaluate every configured funder policy.
+2. Build an allow-list containing only eligible funder IDs.
+3. Pass that allow-list into Qdrant as a payload filter.
+4. Query `profile_vec` and `comments_vec` and combine their cosine scores.
+5. Return only results above the configured close-precedent threshold.
+
+Run the live aligned-precedent smoke against the shared Qdrant service:
+
+```powershell
+uv run --extra retrieval fundermatch-match-precedents `
+  --case-id SYN-001 `
+  --qdrant-url http://127.0.0.1:6999 `
+  --model-dir C:\path\to\pinned\bge-m3-snapshot
+```
+
+This stage returns precedent evidence, not a credit decision. Phase 3 may use
+the eligible results to assemble a suggestion, but only a human can approve or
+reject an application.
 
 ## Product controls
 

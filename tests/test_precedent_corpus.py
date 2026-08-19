@@ -11,6 +11,7 @@ from fundermatch.precedent.store import (
     QdrantPrecedentConfig,
     QdrantPrecedentStore,
 )
+from fundermatch.rules.schema import BorrowerApplication
 
 
 class StubEmbedder:
@@ -39,15 +40,14 @@ def test_corpus_contains_twenty_unique_invented_cases(
 
 def test_phase_two_scenarios_are_explicit_fixtures(
     aligned_precedent: DecidedLoanCase,
-    similar_but_hard_rule_ineligible: DecidedLoanCase,
-    no_close_precedent: DecidedLoanCase,
+    aligned_application: BorrowerApplication,
+    similar_but_hard_rule_ineligible: BorrowerApplication,
+    no_close_precedent: BorrowerApplication,
 ) -> None:
     assert aligned_precedent.industry == similar_but_hard_rule_ineligible.industry
-    assert (
-        similar_but_hard_rule_ineligible.profile.requested_amount_crore
-        > similar_but_hard_rule_ineligible.profile.annual_revenue_crore
-    )
-    assert no_close_precedent.industry != aligned_precedent.industry
+    assert aligned_application.profile == aligned_precedent.profile
+    assert similar_but_hard_rule_ineligible.profile.requested_amount_crore == 80
+    assert "NO_CLOSE_VECTOR" in no_close_precedent.finance_context
 
 
 def test_qdrant_uses_profile_and_comments_named_vectors(

@@ -1,0 +1,64 @@
+policies:
+  - funder_id: northstar-capital
+    display_name: Northstar Capital
+    allowed_industries:
+      - Auto components
+      - Business services
+      - Healthcare services
+      - Renewable components
+    allowed_regions: [North, South, West]
+    min_requested_amount_crore: 10
+    max_requested_amount_crore: 40
+    min_dscr: 1.20
+    max_debt_to_ebitda: 3.00
+    min_collateral_cover: 0.70
+    min_years_operating: 5
+
+  - funder_id: harborline-credit
+    display_name: Harborline Credit
+    allowed_industries:
+      - Agricultural inputs
+      - Auto components
+      - Engineering
+      - Food processing
+      - Industrial machinery
+      - Packaging
+    allowed_regions: [Central, North, South, West]
+    min_requested_amount_crore: 15
+    max_requested_amount_crore: 90
+    min_dscr: 1.10
+    max_debt_to_ebitda: 4.00
+    min_collateral_cover: 0.90
+    min_years_operating: 7
+
+  - funder_id: meridian-growth-finance
+    display_name: Meridian Growth Finance
+    allowed_industries:
+      - Consumer products
+      - Dairy processing
+      - Logistics
+      - Medical devices
+      - Textiles
+    allowed_regions: [East, North, West]
+    min_requested_amount_crore: 15
+    max_requested_amount_crore: 75
+    min_dscr: 1.00
+    max_debt_to_ebitda: 4.50
+    min_collateral_cover: 0.85
+    min_years_operating: 6
+
+  - funder_id: cobalt-infrastructure-fund
+    display_name: Cobalt Infrastructure Fund
+    allowed_industries:
+      - Bioenergy
+      - Building materials
+      - Electrical equipment
+      - Paper products
+      - Specialty glass
+    allowed_regions: [Central, East, North, South, West]
+    min_requested_amount_crore: 20
+    max_requested_amount_crore: 100
+    min_dscr: 1.05
+    max_debt_to_ebitda: 4.25
+    min_collateral_cover: 0.90
+    min_years_operating: 6

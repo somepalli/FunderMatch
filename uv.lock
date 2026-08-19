@@ -510,6 +510,7 @@ source = { editable = "." }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
+    { name = "pyyaml" },
     { name = "qdrant-client" },
 ]
 
@@ -528,6 +529,7 @@ requires-dist = [
     { name = "httpx", specifier = "==0.28.1" },
     { name = "pydantic", specifier = "==2.10.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==8.3.4" },
+    { name = "pyyaml", specifier = "==6.0.3" },
     { name = "qdrant-client", specifier = "==1.18.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.9.10" },
 ]
