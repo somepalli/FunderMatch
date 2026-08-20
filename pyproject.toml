@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fundermatch"
-version = "0.5.0"
+version = "0.6.0"
 description = "Human-decided, rule-gated funder matching with precedent retrieval"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -37,6 +37,7 @@ fundermatch-suggest = "fundermatch.suggest.cli:main"
 fundermatch-migrate-workflow = "fundermatch.workflow.migrate:main"
 fundermatch-workflow-smoke = "fundermatch.workflow.smoke:main"
 fundermatch-writeback-smoke = "fundermatch.precedent.writeback_cli:main"
+fundermatch-demo-review = "fundermatch.workflow.demo:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fundermatch"]

@@ -5,4 +5,5 @@
 .uv-cache*/
 __pycache__/
 *.py[cod]
+*.log
 .env

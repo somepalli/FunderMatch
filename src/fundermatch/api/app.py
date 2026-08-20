@@ -1,4 +1,4 @@
-"""Thin async HTTP endpoints over the Phase 4 workflow service."""
+"""Thin async HTTP endpoints and the same-origin Phase 6 review console."""
 
 import os
 from collections.abc import AsyncIterator
@@ -9,7 +9,9 @@ from uuid import UUID, uuid4
 
 import asyncpg
 from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from fundermatch.api.auth import JwtAuthenticator, TokenAuthenticator
@@ -88,7 +90,9 @@ def create_app(
             app.state.writeback_service.store.client.close()
             await pool.close()
 
-    app = FastAPI(title="FunderMatch HITL API", version="0.5.0", lifespan=lifespan)
+    app = FastAPI(title="FunderMatch HITL API", version="0.6.0", lifespan=lifespan)
+    static_dir = Path(__file__).with_name("static")
+    app.mount("/assets", StaticFiles(directory=static_dir), name="review-assets")
     if repository is not None:
         app.state.workflow_service = WorkflowService(repository)
     if writeback_service is not None:
@@ -143,6 +147,21 @@ def create_app(
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/", include_in_schema=False)
+    async def review_console() -> FileResponse:
+        return FileResponse(
+            static_dir / "index.html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "default-src 'self'; script-src 'self'; style-src 'self'; "
+                    "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'"
+                ),
+                "Referrer-Policy": "no-referrer",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @app.post("/v1/workflows", response_model=TransitionResult, status_code=201)
     async def create_workflow(

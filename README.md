@@ -6,7 +6,7 @@ extraction only through FinDocIQ's versioned HTTP contract.
 
 ## Current status
 
-Phases 0–5 are implemented:
+Phases 0–6 are implemented:
 
 - async HTTP-only `FinDocIQClient`;
 - local Pydantic copy of `/extract` contract version `1.0`;
@@ -46,6 +46,14 @@ Phases 0–5 are implemented:
   memory, with `send_back` deliberately excluded from lending precedent;
 - deterministic Qdrant point IDs, payload-hash receipts, retry-safe writes, and
   a case-one decision to case-two retrieval smoke.
+- a responsive, outcome-first review console served directly by FastAPI with
+  no separate UI backend or chat interface;
+- three panels for borrower evidence, rule-gated funders, and precedent plus
+  authoritative human controls;
+- click-to-source document/page/bbox provenance, explicit override capture,
+  separate reviewer and pipeline credentials, and immutable audit history;
+- an invented demo-case bootstrap that issues short-lived local JWTs without
+  weakening production authentication.
 
 The synthetic corpus demonstrates the mechanism only. It supports no matching
 accuracy, credit-quality, or fair-lending claim.
@@ -230,6 +238,47 @@ The smoke uses invented, near-identical cases to prove that newly decided
 memory becomes searchable. Its similarity score is not a matching-quality or
 credit-accuracy result.
 
+## Three-panel human review console
+
+Phase 6 is served by the same FastAPI process at `/`; API and UI remain
+same-origin. The interface is deliberately not conversational:
+
+1. **Borrower evidence** shows normalized financials, finance and operations
+   context, and clickable `(document, page, bbox)` provenance.
+2. **Funder shortlist** separates eligible candidates from hard-rule
+   exclusions and shows the actual-versus-required result for each check.
+3. **Precedent and decision** shows historical human outcomes and exposes the
+   four authenticated human actions only while the durable state is
+   `AWAITING_HUMAN`.
+
+Reviewer and pipeline JWTs are separate. They are stored only in browser-tab
+`sessionStorage`, never in a URL or persistent browser storage. A reviewer can
+record the human outcome; a pipeline credential is required for the subsequent
+Qdrant write-back. Selecting an excluded funder renders a required justification
+field for every failed hard rule.
+
+Start the local services and create an invented review case:
+
+```powershell
+docker compose up -d postgres
+$env:FUNDERMATCH_DATABASE_URL = `
+  "postgresql://fundermatch:fundermatch-local-only@127.0.0.1:7444/fundermatch"
+$env:FUNDERMATCH_JWT_SECRET = "replace-with-a-random-secret-of-32-plus-characters"
+$env:FUNDERMATCH_QDRANT_URL = "http://127.0.0.1:6999"
+$env:FUNDERMATCH_BGE_SNAPSHOT_DIR = "C:\path\to\pinned\bge-m3-snapshot"
+uv run fundermatch-demo-review
+uv run uvicorn fundermatch.api.app:create_app --factory `
+  --host 127.0.0.1 --port 8977
+```
+
+The bootstrap prints an application ID, review URL, and short-lived reviewer
+and pipeline tokens. Open the URL, choose **Credentials**, and paste the tokens
+into their separately labelled fields. All bootstrap data is invented.
+
+The console ships as package data inside the Python wheel and uses no CDN,
+external font, analytics script, or Node runtime. A restrictive same-origin
+content security policy blocks third-party scripts and framing.
+
 ## Product controls
 
 - Rules gate eligibility; similarity ranks only eligible candidates.
@@ -237,5 +286,7 @@ credit-accuracy result.
 - Every human transition is durable and audited in Postgres.
 - Only a confirmed human outcome is eligible for precedent write-back.
 - An excluded funder requires explicit human overrides for every failed rule.
+- UI controls render workflow authority; they do not replace server-side role,
+  transition, or optimistic-version checks.
 - Case memory means Qdrant precedent retrieval, not online model training.
 - Demo data is synthetic and makes no match-accuracy claim.

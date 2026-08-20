@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Human review console for rule-gated funder matching">
+    <title>FunderMatch · Human review</title>
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/assets/styles.css">
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to review workspace</a>
+    <header class="app-header">
+      <div class="brand" aria-label="FunderMatch">
+        <span class="brand-mark" aria-hidden="true">FM</span>
+        <span>
+          <strong>FunderMatch</strong>
+          <small>Human decision workspace</small>
+        </span>
+      </div>
+      <form class="case-loader" id="case-loader">
+        <label for="application-id">Application ID</label>
+        <div class="input-action">
+          <input id="application-id" name="application-id" autocomplete="off"
+                 placeholder="APP-PHASE6-DEMO" required>
+          <button type="submit" class="button button-primary">Open case</button>
+        </div>
+      </form>
+      <button class="button button-quiet" id="open-settings" type="button"
+              aria-haspopup="dialog">Credentials</button>
+    </header>
+
+    <main id="workspace" class="shell">
+      <section class="case-banner" aria-live="polite">
+        <div>
+          <p class="eyebrow">Current outcome</p>
+          <div class="status-line">
+            <h1 id="case-title">No case loaded</h1>
+            <span class="state-badge state-neutral" id="workflow-state">Waiting</span>
+          </div>
+          <p id="case-subtitle">Enter an application ID and credentials to begin.</p>
+        </div>
+        <div class="banner-meta">
+          <span>Version <strong id="workflow-version">—</strong></span>
+          <span>Last activity <strong id="last-activity">—</strong></span>
+        </div>
+      </section>
+
+      <div id="notice" class="notice" role="status" hidden></div>
+
+      <section class="workspace-grid" aria-label="Application review panels">
+        <article class="panel" aria-labelledby="borrower-heading">
+          <header class="panel-header">
+            <div>
+              <p class="panel-number">01</p>
+              <h2 id="borrower-heading">Borrower evidence</h2>
+            </div>
+            <span class="panel-chip" id="evidence-count">0 sources</span>
+          </header>
+          <div id="borrower-content" class="panel-body empty-state">
+            <span class="empty-icon" aria-hidden="true">◇</span>
+            <p>Borrower facts and document provenance appear here.</p>
+          </div>
+        </article>
+
+        <article class="panel" aria-labelledby="shortlist-heading">
+          <header class="panel-header">
+            <div>
+              <p class="panel-number">02</p>
+              <h2 id="shortlist-heading">Funder shortlist</h2>
+            </div>
+            <span class="panel-chip" id="candidate-count">0 eligible</span>
+          </header>
+          <div id="shortlist-content" class="panel-body empty-state">
+            <span class="empty-icon" aria-hidden="true">◎</span>
+            <p>Rule-gated candidates and exclusions appear here.</p>
+          </div>
+        </article>
+
+        <article class="panel panel-decision" aria-labelledby="decision-heading">
+          <header class="panel-header">
+            <div>
+              <p class="panel-number">03</p>
+              <h2 id="decision-heading">Precedent &amp; decision</h2>
+            </div>
+            <span class="panel-chip advisory-chip">Human authority</span>
+          </header>
+          <div id="decision-content" class="panel-body empty-state">
+            <span class="empty-icon" aria-hidden="true">✓</span>
+            <p>Historical precedent and human controls appear here.</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="audit-panel" aria-labelledby="audit-heading">
+        <header class="audit-header">
+          <div>
+            <p class="eyebrow">Immutable history</p>
+            <h2 id="audit-heading">Workflow audit</h2>
+          </div>
+          <button class="button button-quiet" id="refresh-case" type="button" disabled>
+            Refresh
+          </button>
+        </header>
+        <ol id="audit-list" class="audit-list">
+          <li class="audit-empty">No workflow events loaded.</li>
+        </ol>
+      </section>
+    </main>
+
+    <dialog id="settings-dialog" class="dialog">
+      <form method="dialog" id="settings-form">
+        <div class="dialog-header">
+          <div>
+            <p class="eyebrow">Session-only access</p>
+            <h2>Credentials</h2>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="Close credentials">×</button>
+        </div>
+        <p class="dialog-copy">Tokens stay in this browser tab and are never written to the URL.</p>
+        <label for="reviewer-token">Reviewer bearer token</label>
+        <textarea id="reviewer-token" rows="3" spellcheck="false"
+                  placeholder="Required for human decisions and case reading"></textarea>
+        <label for="pipeline-token">Pipeline bearer token</label>
+        <textarea id="pipeline-token" rows="3" spellcheck="false"
+                  placeholder="Required only to write a confirmed precedent"></textarea>
+        <div class="dialog-actions">
+          <button class="button button-quiet" type="button" id="clear-tokens">Clear</button>
+          <button class="button button-primary" value="save">Save for this tab</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="source-dialog" class="dialog source-dialog">
+      <div class="dialog-header">
+        <div>
+          <p class="eyebrow">Click-to-source provenance</p>
+          <h2 id="source-title">Source location</h2>
+        </div>
+        <button class="icon-button" id="close-source" aria-label="Close source">×</button>
+      </div>
+      <div id="source-content"></div>
+    </dialog>
+
+    <div id="toast-region" class="toast-region" aria-live="assertive"></div>
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>
