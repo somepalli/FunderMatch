@@ -6,7 +6,7 @@ extraction only through FinDocIQ's versioned HTTP contract.
 
 ## Current status
 
-Phases 0–3 are implemented:
+Phases 0–4 are implemented:
 
 - async HTTP-only `FinDocIQClient`;
 - local Pydantic copy of `/extract` contract version `1.0`;
@@ -33,6 +33,13 @@ Phases 0–3 are implemented:
   human outcomes;
 - an optional pinned Gemma 3 narrative adapter with temperature 0, fixed seed,
   a prompt file, structured JSON output, and post-generation authority guards.
+- an optimistic-versioned Postgres state machine for durable human review;
+- JWT-authenticated pipeline and reviewer roles, with actor identity taken from
+  signed claims rather than request bodies;
+- idempotent commands and append-only audit events containing the actor,
+  reason, changes, and timestamp for every transition;
+- thin async FastAPI endpoints for intake, pipeline progress, human decisions,
+  workflow state, and ordered audit history.
 
 The synthetic corpus demonstrates the mechanism only. It supports no matching
 accuracy, credit-quality, or fair-lending claim.
@@ -156,10 +163,40 @@ schema. Generated language that attempts to recommend approval or rejection is
 rejected after generation. The bundle always declares `authority:
 advisory_only` and `requires_human_decision: true`.
 
+## Durable human review and audit
+
+Phase 4 persists `AWAITING_HUMAN`; only a token with the `human_reviewer` role
+can transition it to `HUMAN_DECIDED`. The supported actions are `approve`,
+`reject`, `approve_with_conditions`, and `send_back`. None is selected by AI.
+Each write carries an expected workflow version and a command ID, so stale
+review screens fail safely and retries replay the original result.
+
+Start local Postgres on conflict-free host port `7444`, then migrate and run a
+complete live transition smoke:
+
+```powershell
+docker compose up -d postgres
+$env:FUNDERMATCH_DATABASE_URL = `
+  "postgresql://fundermatch:fundermatch-local-only@127.0.0.1:7444/fundermatch"
+uv run fundermatch-migrate-workflow
+uv run fundermatch-workflow-smoke
+```
+
+Run the API on host port `8977` after setting a random JWT secret of at least 32
+characters:
+
+```powershell
+$env:FUNDERMATCH_JWT_SECRET = "replace-with-a-random-secret-of-32-plus-characters"
+uv run uvicorn fundermatch.api.app:create_app --factory --port 8977
+```
+
+The migration installs a database trigger that rejects `UPDATE` and `DELETE`
+on `workflow_audit`; corrections are new events, never rewrites of history.
+
 ## Product controls
 
 - Rules gate eligibility; similarity ranks only eligible candidates.
 - AI output is a suggestion. A human decision is authoritative.
-- Every human transition will be durable and audited in Postgres.
+- Every human transition is durable and audited in Postgres.
 - Case memory means Qdrant precedent retrieval, not online model training.
 - Demo data is synthetic and makes no match-accuracy claim.

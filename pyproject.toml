@@ -10,10 +10,14 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 license = { text = "Apache-2.0" }
 dependencies = [
+  "asyncpg==0.31.0",
+  "fastapi==0.116.1",
   "httpx==0.28.1",
   "pydantic==2.10.3",
+  "PyJWT==2.10.1",
   "PyYAML==6.0.3",
   "qdrant-client==1.18.0",
+  "uvicorn==0.35.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +34,8 @@ fundermatch-match-precedents = "fundermatch.matching.cli:main"
 fundermatch-narrative-smoke = "fundermatch.suggest.narrative_cli:main"
 fundermatch-seed-precedents = "fundermatch.precedent.cli:main"
 fundermatch-suggest = "fundermatch.suggest.cli:main"
+fundermatch-migrate-workflow = "fundermatch.workflow.migrate:main"
+fundermatch-workflow-smoke = "fundermatch.workflow.smoke:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fundermatch"]
