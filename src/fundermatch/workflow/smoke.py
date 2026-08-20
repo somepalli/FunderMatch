@@ -21,8 +21,9 @@ from fundermatch.workflow.service import WorkflowService
 
 async def run() -> None:
     dsn = os.environ["FUNDERMATCH_DATABASE_URL"]
-    migration = Path(__file__).resolve().parents[3] / "migrations" / "001_hitl_workflow.sql"
-    await PostgresWorkflowRepository.migrate(dsn, migration)
+    migration_dir = Path(__file__).resolve().parents[3] / "migrations"
+    for migration in sorted(migration_dir.glob("*.sql")):
+        await PostgresWorkflowRepository.migrate(dsn, migration)
     pipeline = ActorClaims(
         actor_id="phase4-smoke-pipeline",
         display_name="Phase 4 Smoke Pipeline",
@@ -62,6 +63,7 @@ async def run() -> None:
             HumanDecisionCommand(
                 expected_version=4,
                 action=HumanAction.APPROVE_WITH_CONDITIONS,
+                funder_id="funder-alpha",
                 reason="Human reviewed synthetic smoke evidence",
                 conditions=("Quarterly monitoring",),
             ),

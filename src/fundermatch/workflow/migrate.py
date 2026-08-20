@@ -9,9 +9,13 @@ from fundermatch.workflow.postgres import PostgresWorkflowRepository
 
 async def run() -> None:
     dsn = os.environ["FUNDERMATCH_DATABASE_URL"]
-    migration = Path(__file__).resolve().parents[3] / "migrations" / "001_hitl_workflow.sql"
-    await PostgresWorkflowRepository.migrate(dsn, migration)
-    print("workflow migration applied")
+    migration_dir = Path(__file__).resolve().parents[3] / "migrations"
+    migrations = sorted(migration_dir.glob("*.sql"))
+    if not migrations:
+        raise RuntimeError(f"no workflow migrations found in {migration_dir}")
+    for migration in migrations:
+        await PostgresWorkflowRepository.migrate(dsn, migration)
+        print(f"applied {migration.name}")
 
 
 def main() -> None:

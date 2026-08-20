@@ -3,6 +3,7 @@
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 from uuid import UUID, uuid4
 
@@ -12,6 +13,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
 from fundermatch.api.auth import JwtAuthenticator, TokenAuthenticator
+from fundermatch.precedent.embedder import BgeM3Config, BgeM3Embedder
+from fundermatch.precedent.store import QdrantPrecedentConfig, QdrantPrecedentStore
+from fundermatch.precedent.writeback import PrecedentWritebackService, WritebackResult
 from fundermatch.workflow.errors import (
     InvalidTransitionError,
     WorkflowAuthorizationError,
@@ -26,6 +30,7 @@ from fundermatch.workflow.schema import (
     AuditEvent,
     HumanDecisionCommand,
     PipelineAdvanceCommand,
+    PrecedentWriteCommand,
     TransitionResult,
     WorkflowRecord,
 )
@@ -49,6 +54,7 @@ class AuditResponse(BaseModel):
 def create_app(
     repository: WorkflowRepository | None = None,
     authenticator: TokenAuthenticator | None = None,
+    writeback_service: PrecedentWritebackService | None = None,
 ) -> FastAPI:
     injected = repository is not None
 
@@ -59,15 +65,34 @@ def create_app(
             return
         dsn = os.environ["FUNDERMATCH_DATABASE_URL"]
         pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10)
-        app.state.workflow_service = WorkflowService(PostgresWorkflowRepository(pool))
+        workflow_service = WorkflowService(PostgresWorkflowRepository(pool))
+        app.state.workflow_service = workflow_service
+        snapshot = os.getenv("FUNDERMATCH_BGE_SNAPSHOT_DIR")
+        app.state.writeback_service = PrecedentWritebackService(
+            workflow=workflow_service,
+            store=QdrantPrecedentStore(
+                QdrantPrecedentConfig(
+                    url=os.getenv("FUNDERMATCH_QDRANT_URL", "http://127.0.0.1:6999"),
+                    collection=os.getenv(
+                        "FUNDERMATCH_QDRANT_COLLECTION", "fundermatch_precedents"
+                    ),
+                )
+            ),
+            embedder=BgeM3Embedder(
+                BgeM3Config(snapshot_dir=Path(snapshot) if snapshot else None)
+            ),
+        )
         try:
             yield
         finally:
+            app.state.writeback_service.store.client.close()
             await pool.close()
 
-    app = FastAPI(title="FunderMatch HITL API", version="0.4.0", lifespan=lifespan)
+    app = FastAPI(title="FunderMatch HITL API", version="0.5.0", lifespan=lifespan)
     if repository is not None:
         app.state.workflow_service = WorkflowService(repository)
+    if writeback_service is not None:
+        app.state.writeback_service = writeback_service
     app.state.authenticator = authenticator or JwtAuthenticator(
         secret=os.environ["FUNDERMATCH_JWT_SECRET"],
         issuer=os.getenv("FUNDERMATCH_JWT_ISSUER", "fundermatch"),
@@ -89,6 +114,15 @@ def create_app(
 
     def service(request: Request) -> WorkflowService:
         return request.app.state.workflow_service
+
+    def writeback(request: Request) -> PrecedentWritebackService:
+        value = getattr(request.app.state, "writeback_service", None)
+        if value is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="precedent write-back is not configured",
+            )
+        return value
 
     @app.exception_handler(WorkflowNotFoundError)
     async def not_found(_: Request, exc: WorkflowNotFoundError) -> HTTPException:
@@ -140,6 +174,15 @@ def create_app(
         workflow_service: Annotated[WorkflowService, Depends(service)],
     ) -> TransitionResult:
         return await workflow_service.decide(application_id, payload, actor)
+
+    @app.post("/v1/workflows/{application_id}/precedent", response_model=WritebackResult)
+    async def write_precedent(
+        application_id: str,
+        payload: PrecedentWriteCommand,
+        actor: Annotated[ActorClaims, Depends(actor_from_token)],
+        precedent_service: Annotated[PrecedentWritebackService, Depends(writeback)],
+    ) -> WritebackResult:
+        return await precedent_service.write(application_id, payload, actor)
 
     @app.get("/v1/workflows/{application_id}", response_model=WorkflowRecord)
     async def get_workflow(

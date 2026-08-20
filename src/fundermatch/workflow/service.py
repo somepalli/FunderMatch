@@ -12,9 +12,12 @@ from fundermatch.workflow.schema import (
     ActorClaims,
     ActorRole,
     AuditEvent,
+    HumanAction,
     HumanDecisionCommand,
     HumanDecisionRecord,
     PipelineAdvanceCommand,
+    PrecedentWriteCommand,
+    PrecedentWriteReceipt,
     TransitionResult,
     WorkflowRecord,
     WorkflowState,
@@ -124,8 +127,10 @@ class WorkflowService:
             now = utc_now()
             decision = HumanDecisionRecord(
                 action=command.action,
+                funder_id=command.funder_id,
                 reason=command.reason,
                 conditions=command.conditions,
+                overrides=command.overrides,
                 actor_id=actor.actor_id,
                 actor_display_name=actor.display_name,
                 decided_at=now,
@@ -151,6 +156,53 @@ class WorkflowService:
                     "state": updated.state.value,
                     "version": updated.version,
                     "decision": decision.model_dump(mode="json"),
+                },
+            )
+            return updated, event
+
+        return await self._repository.transition(
+            application_id, str(command.command_id), transition
+        )
+
+    async def mark_precedent_written(
+        self,
+        application_id: str,
+        command: PrecedentWriteCommand,
+        receipt: PrecedentWriteReceipt,
+        actor: ActorClaims,
+    ) -> TransitionResult:
+        self._require_role(actor, ActorRole.PIPELINE)
+
+        def transition(current: WorkflowRecord, sequence: int) -> tuple[WorkflowRecord, AuditEvent]:
+            self._require_version(current, command.expected_version)
+            if current.state != WorkflowState.HUMAN_DECIDED:
+                raise InvalidTransitionError(
+                    f"precedent write requires HUMAN_DECIDED, found {current.state.value}"
+                )
+            if current.decision is None or current.decision.action == HumanAction.SEND_BACK:
+                raise InvalidTransitionError("send_back is not a decided lending precedent")
+            now = utc_now()
+            updated = current.model_copy(
+                update={
+                    "state": WorkflowState.PRECEDENT_WRITTEN,
+                    "version": current.version + 1,
+                    "precedent_receipt": receipt,
+                    "updated_at": now,
+                }
+            )
+            event = self._event(
+                command_id=command.command_id,
+                workflow=updated,
+                sequence=sequence,
+                actor=actor,
+                from_state=current.state,
+                to_state=updated.state,
+                action="precedent_written",
+                reason=command.reason,
+                changes={
+                    "state": updated.state.value,
+                    "version": updated.version,
+                    "precedent_receipt": receipt.model_dump(mode="json"),
                 },
             )
             return updated, event

@@ -6,7 +6,7 @@ extraction only through FinDocIQ's versioned HTTP contract.
 
 ## Current status
 
-Phases 0–4 are implemented:
+Phases 0–5 are implemented:
 
 - async HTTP-only `FinDocIQClient`;
 - local Pydantic copy of `/extract` contract version `1.0`;
@@ -40,6 +40,12 @@ Phases 0–4 are implemented:
   reason, changes, and timestamp for every transition;
 - thin async FastAPI endpoints for intake, pipeline progress, human decisions,
   workflow state, and ordered audit history.
+- a confirmed human-decision write-back into Qdrant's `profile_vec` and
+  `comments_vec`, followed by the durable `PRECEDENT_WRITTEN` transition;
+- explicit conditions and human policy overrides embedded into precedent
+  memory, with `send_back` deliberately excluded from lending precedent;
+- deterministic Qdrant point IDs, payload-hash receipts, retry-safe writes, and
+  a case-one decision to case-two retrieval smoke.
 
 The synthetic corpus demonstrates the mechanism only. It supports no matching
 accuracy, credit-quality, or fair-lending claim.
@@ -138,8 +144,7 @@ finance and operations comments, historical human outcome, and complete source
 evidence. A candidate with no close precedent remains visible with an explicit
 evidence-gap flag.
 
-Run live BGE/Qdrant retrieval and deterministic assembly while vLLM is stopped
-to leave GPU memory available for BGE-M3:
+Run live BGE/Qdrant retrieval and deterministic assembly:
 
 ```powershell
 uv run --extra retrieval fundermatch-suggest `
@@ -160,8 +165,8 @@ uv run --extra retrieval fundermatch-narrative-smoke `
 The prompt is stored in `prompts/suggestion_narrative_system.txt`. The adapter
 uses the pinned Gemma revision, temperature `0`, seed `17`, and a strict JSON
 schema. Generated language that attempts to recommend approval or rejection is
-rejected after generation. The bundle always declares `authority:
-advisory_only` and `requires_human_decision: true`.
+rejected after generation. The bundle always declares `authority: advisory_only`
+and `requires_human_decision: true`.
 
 ## Durable human review and audit
 
@@ -193,10 +198,44 @@ uv run uvicorn fundermatch.api.app:create_app --factory --port 8977
 The migration installs a database trigger that rejects `UPDATE` and `DELETE`
 on `workflow_audit`; corrections are new events, never rewrites of history.
 
+## Precedent write-back loop
+
+Phase 5 converts the application, its cited evidence, finance and operations
+context, and the authoritative human outcome into a `DecidedLoanCase`. It then
+embeds the profile separately from comments, rationale, conditions, and human
+overrides. Qdrant must return the exact stored payload before the pipeline may
+transition Postgres from `HUMAN_DECIDED` to `PRECEDENT_WRITTEN`.
+
+The Qdrant point ID is derived from the application ID. A command ID makes the
+Postgres transition idempotent, and a SHA-256 payload receipt detects later
+payload drift. A failed embedding or Qdrant write leaves the durable workflow
+at `HUMAN_DECIDED`, ready for a safe retry.
+
+Run the live case-one write and case-two retrieval smoke:
+
+```powershell
+$env:FUNDERMATCH_DATABASE_URL = `
+  "postgresql://fundermatch:fundermatch-local-only@127.0.0.1:7444/fundermatch"
+uv run --extra retrieval fundermatch-writeback-smoke `
+  --qdrant-url http://127.0.0.1:6999 `
+  --model-dir C:\path\to\pinned\bge-m3-snapshot
+```
+
+The August 2026 Windows `uv` smoke resolved PyTorch `2.13.0+cpu`, so this BGE-M3
+write-back validation was CPU-bound. It does not report latency. Gemma through
+vLLM is the separately validated GPU-serving path; a CUDA-enabled PyTorch build
+is required before claiming GPU-backed BGE embeddings.
+
+The smoke uses invented, near-identical cases to prove that newly decided
+memory becomes searchable. Its similarity score is not a matching-quality or
+credit-accuracy result.
+
 ## Product controls
 
 - Rules gate eligibility; similarity ranks only eligible candidates.
 - AI output is a suggestion. A human decision is authoritative.
 - Every human transition is durable and audited in Postgres.
+- Only a confirmed human outcome is eligible for precedent write-back.
+- An excluded funder requires explicit human overrides for every failed rule.
 - Case memory means Qdrant precedent retrieval, not online model training.
 - Demo data is synthetic and makes no match-accuracy claim.

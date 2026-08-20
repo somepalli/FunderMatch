@@ -59,6 +59,7 @@ def test_api_human_actor_is_derived_from_token():
         json={
             "expected_version": 4,
             "action": "approve_with_conditions",
+            "funder_id": "funder-alpha",
             "reason": "Approved after human review",
             "conditions": ["Quarterly monitoring"],
             "actor_id": "forged-user",
@@ -73,3 +74,13 @@ def test_api_human_actor_is_derived_from_token():
     audit = client.get("/v1/workflows/api-2/audit", headers=reviewer_headers).json()["events"]
     assert len(audit) == 6
     assert audit[-1]["actor_id"] == "reviewer-api"
+
+
+def test_precedent_endpoint_reports_when_writeback_is_not_configured():
+    client = TestClient(create_app(InMemoryWorkflowRepository(), FakeAuthenticator()))
+    response = client.post(
+        "/v1/workflows/missing/precedent",
+        json={"expected_version": 5, "reason": "persist decision"},
+        headers={"Authorization": "Bearer pipeline-token"},
+    )
+    assert response.status_code == 503

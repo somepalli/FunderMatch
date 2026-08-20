@@ -20,4 +20,10 @@ def load_cases(path: str | Path) -> tuple[DecidedLoanCase, ...]:
     case_ids = [case.case_id for case in cases]
     if len(case_ids) != len(set(case_ids)):
         raise ValueError("synthetic precedent corpus contains duplicate case_id values")
+    if any(
+        not metric.citation.document_id.startswith("synthetic-")
+        for case in cases
+        for metric in case.evidence
+    ):
+        raise ValueError("the checked-in Phase 1 corpus must use synthetic document IDs")
     return cases

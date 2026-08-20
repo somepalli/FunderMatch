@@ -53,7 +53,7 @@ class QdrantPrecedentStore:
             raise ValueError("embedder returned a vector count that does not match the corpus")
         points = [
             models.PointStruct(
-                id=str(uuid5(NAMESPACE_URL, f"fundermatch:{case.case_id}")),
+                id=self.point_id(case.case_id),
                 vector={
                     PROFILE_VECTOR: profile_vector,
                     COMMENTS_VECTOR: comment_vector,
@@ -66,6 +66,29 @@ class QdrantPrecedentStore:
         ]
         self.client.upsert(collection_name=self.config.collection, points=points, wait=True)
         return len(points)
+
+    def write_one(
+        self, case: DecidedLoanCase, embedder: PrecedentEmbedder
+    ) -> DecidedLoanCase:
+        """Idempotently upsert one case and verify its payload from Qdrant."""
+
+        self.seed((case,), embedder)
+        records = self.client.retrieve(
+            collection_name=self.config.collection,
+            ids=[self.point_id(case.case_id)],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if len(records) != 1 or records[0].payload is None:
+            raise RuntimeError(f"Qdrant did not confirm precedent {case.case_id!r}")
+        stored = DecidedLoanCase.model_validate(records[0].payload)
+        if stored != case:
+            raise RuntimeError(f"Qdrant payload verification failed for {case.case_id!r}")
+        return stored
+
+    @staticmethod
+    def point_id(case_id: str) -> str:
+        return str(uuid5(NAMESPACE_URL, f"fundermatch:{case_id}"))
 
     def _ensure_collection(self, vector_size: int, *, recreate: bool) -> None:
         exists = self.client.collection_exists(self.config.collection)

@@ -72,6 +72,7 @@ def test_each_human_action_is_audited(action, conditions):
             HumanDecisionCommand(
                 expected_version=4,
                 action=action,
+                funder_id=None if action == HumanAction.SEND_BACK else "funder-alpha",
                 reason="Reviewer assessed the evidence",
                 conditions=conditions,
             ),
@@ -91,7 +92,10 @@ def test_only_human_can_leave_awaiting_human():
     async def scenario():
         service, application_id = await awaiting_human()
         command = HumanDecisionCommand(
-            expected_version=4, action=HumanAction.APPROVE, reason="Not a human"
+            expected_version=4,
+            action=HumanAction.APPROVE,
+            funder_id="funder-alpha",
+            reason="Not a human",
         )
         with pytest.raises(WorkflowAuthorizationError):
             await service.decide(application_id, command, PIPELINE)
@@ -104,7 +108,10 @@ def test_human_cannot_decide_before_awaiting_state():
         service = WorkflowService(InMemoryWorkflowRepository())
         await service.create("early", PIPELINE)
         command = HumanDecisionCommand(
-            expected_version=0, action=HumanAction.REJECT, reason="Too early"
+            expected_version=0,
+            action=HumanAction.REJECT,
+            funder_id="funder-alpha",
+            reason="Too early",
         )
         with pytest.raises(InvalidTransitionError):
             await service.decide("early", command, REVIEWER)
@@ -116,7 +123,10 @@ def test_stale_version_is_rejected_and_command_is_idempotent():
     async def scenario():
         service, application_id = await awaiting_human()
         command = HumanDecisionCommand(
-            expected_version=4, action=HumanAction.APPROVE, reason="Evidence supports approval"
+            expected_version=4,
+            action=HumanAction.APPROVE,
+            funder_id="funder-alpha",
+            reason="Evidence supports approval",
         )
         first = await service.decide(application_id, command, REVIEWER)
         assert await service.decide(application_id, command, REVIEWER) == first
@@ -132,12 +142,14 @@ def test_conditions_are_action_specific():
         HumanDecisionCommand(
             expected_version=4,
             action=HumanAction.APPROVE_WITH_CONDITIONS,
+            funder_id="funder-alpha",
             reason="Needs controls",
         )
     with pytest.raises(ValidationError):
         HumanDecisionCommand(
             expected_version=4,
             action=HumanAction.REJECT,
+            funder_id="funder-alpha",
             reason="Rejected",
             conditions=("Impossible",),
         )

@@ -39,14 +39,15 @@ class PostgresWorkflowRepository:
                     """
                     INSERT INTO workflow_cases
                         (application_id, state, version, suggestion, decision,
-                         created_at, updated_at)
-                    VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7)
+                         precedent_receipt, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6::jsonb, $7, $8)
                     """,
                     workflow.application_id,
                     workflow.state.value,
                     workflow.version,
                     self._json(workflow.suggestion),
                     self._json(workflow.decision),
+                    self._json(workflow.precedent_receipt),
                     workflow.created_at,
                     workflow.updated_at,
                 )
@@ -112,7 +113,8 @@ class PostgresWorkflowRepository:
                 """
                 UPDATE workflow_cases
                 SET state = $2, version = $3, suggestion = $4::jsonb,
-                    decision = $5::jsonb, updated_at = $6
+                    decision = $5::jsonb, precedent_receipt = $6::jsonb,
+                    updated_at = $7
                 WHERE application_id = $1
                 """,
                 workflow.application_id,
@@ -120,6 +122,7 @@ class PostgresWorkflowRepository:
                 workflow.version,
                 self._json(workflow.suggestion),
                 self._json(workflow.decision),
+                self._json(workflow.precedent_receipt),
                 workflow.updated_at,
             )
             await self._insert_audit(connection, event)
@@ -202,6 +205,9 @@ class PostgresWorkflowRepository:
         payload = dict(row)
         payload["suggestion"] = PostgresWorkflowRepository._decode_json(payload["suggestion"])
         payload["decision"] = PostgresWorkflowRepository._decode_json(payload["decision"])
+        payload["precedent_receipt"] = PostgresWorkflowRepository._decode_json(
+            payload["precedent_receipt"]
+        )
         return WorkflowRecord.model_validate(payload)
 
     @staticmethod

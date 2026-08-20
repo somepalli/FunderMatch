@@ -6,6 +6,8 @@ from fundermatch.workflow.schema import (
     HumanAction,
     HumanDecisionCommand,
     PipelineAdvanceCommand,
+    PrecedentWriteCommand,
+    PrecedentWriteReceipt,
     WorkflowRecord,
     WorkflowState,
 )
@@ -17,6 +19,8 @@ __all__ = [
     "HumanAction",
     "HumanDecisionCommand",
     "PipelineAdvanceCommand",
+    "PrecedentWriteCommand",
+    "PrecedentWriteReceipt",
     "WorkflowRecord",
     "WorkflowService",
     "WorkflowState",
