@@ -49,6 +49,29 @@ class ExtractRequest(BaseModel):
 
     question: str = Field(min_length=1, max_length=4000)
     question_id: str | None = Field(default=None, min_length=1, max_length=200)
+    document_ids: tuple[str, ...] = Field(default=(), max_length=20)
+
+
+class IngestDocumentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: Literal["1.0"] = "1.0"
+    filename: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    content_base64: str
+
+
+class IngestDocumentResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    contract_version: Literal["1.0"]
+    document_id: str
+    filename: str
+    sha256: str
+    page_count: int
+    chunk_count: int
+    chunk_ids: tuple[str, ...]
+    config_hash: str
 
 
 class ExtractResponse(BaseModel):

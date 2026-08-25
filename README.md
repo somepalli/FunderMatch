@@ -290,3 +290,25 @@ content security policy blocks third-party scripts and framing.
   transition, or optimistic-version checks.
 - Case memory means Qdrant precedent retrieval, not online model training.
 - Demo data is synthetic and makes no match-accuracy claim.
+## Borrower PDF intake
+
+The review console now accepts real borrower PDFs through **New borrower**. Files are
+stored outside Git, sent to FinDocIQ over its authenticated HTTP contract, indexed in
+Qdrant, and queried only within the uploaded document IDs. FinDocIQ extracts annual
+revenue, EBITDA margin, and DSCR with `(document_id, page, bbox)` citations. The form
+requires the remaining hard-rule inputs because the system never guesses eligibility
+facts.
+
+Use an external directory (do not place borrower files in this repository):
+
+```powershell
+$env:FUNDERMATCH_INTAKE_DIR = `
+  "$env:USERPROFILE\Documents\FunderMatch_Data\borrower_intake"
+$env:FINDOCIQ_BASE_URL = "http://127.0.0.1:8989"
+$env:FINDOCIQ_INGEST_TOKEN = "replace-with-a-separate-random-ingestion-token"
+```
+
+Each successful intake is stored under `<intake-dir>/<application-id>/` with the
+original PDFs and a manifest of SHA-256 hashes and FinDocIQ document IDs. The pipeline
+then runs hard rules before precedent retrieval and stops at `AWAITING_HUMAN`; no AI
+output approves or rejects a borrower.

@@ -8,16 +8,20 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 import asyncpg
-from fastapi import Depends, FastAPI, HTTPException, Request, status
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from fundermatch.api.auth import JwtAuthenticator, TokenAuthenticator
+from fundermatch.clients.findociq_client import FinDocIQClient, FinDocIQClientConfig
+from fundermatch.intake import BorrowerIntakeService, IntakeMetadata, IntakeResult
+from fundermatch.matching.retriever import RetrievalConfig, RuleGatedPrecedentRetriever
 from fundermatch.precedent.embedder import BgeM3Config, BgeM3Embedder
 from fundermatch.precedent.store import QdrantPrecedentConfig, QdrantPrecedentStore
 from fundermatch.precedent.writeback import PrecedentWritebackService, WritebackResult
+from fundermatch.rules.config import load_policies
 from fundermatch.workflow.errors import (
     InvalidTransitionError,
     WorkflowAuthorizationError,
@@ -57,6 +61,7 @@ def create_app(
     repository: WorkflowRepository | None = None,
     authenticator: TokenAuthenticator | None = None,
     writeback_service: PrecedentWritebackService | None = None,
+    intake_service: BorrowerIntakeService | None = None,
 ) -> FastAPI:
     injected = repository is not None
 
@@ -84,19 +89,49 @@ def create_app(
                 BgeM3Config(snapshot_dir=Path(snapshot) if snapshot else None)
             ),
         )
+        intake_root = os.getenv("FUNDERMATCH_INTAKE_DIR")
+        ingest_token = os.getenv("FINDOCIQ_INGEST_TOKEN")
+        if intake_root and ingest_token:
+            findociq = FinDocIQClient(
+                FinDocIQClientConfig(
+                    base_url=os.getenv("FINDOCIQ_BASE_URL", "http://127.0.0.1:8989"),
+                    timeout_seconds=600,
+                    ingest_token=ingest_token,
+                )
+            )
+            app.state.findociq_client = findociq
+            app.state.intake_service = BorrowerIntakeService(
+                storage_root=Path(intake_root),
+                findociq=findociq,
+                workflow=workflow_service,
+                retriever=RuleGatedPrecedentRetriever(
+                    client=app.state.writeback_service.store.client,
+                    embedder=app.state.writeback_service.embedder,
+                    config=RetrievalConfig(
+                        collection=app.state.writeback_service.store.config.collection
+                    ),
+                ),
+                policies=load_policies(
+                    os.getenv("FUNDERMATCH_POLICY_PATH", "configs/funder_policies.yaml")
+                ),
+            )
         try:
             yield
         finally:
+            if hasattr(app.state, "findociq_client"):
+                await app.state.findociq_client.aclose()
             app.state.writeback_service.store.client.close()
             await pool.close()
 
-    app = FastAPI(title="FunderMatch HITL API", version="0.6.0", lifespan=lifespan)
+    app = FastAPI(title="FunderMatch HITL API", version="0.7.0", lifespan=lifespan)
     static_dir = Path(__file__).with_name("static")
     app.mount("/assets", StaticFiles(directory=static_dir), name="review-assets")
     if repository is not None:
         app.state.workflow_service = WorkflowService(repository)
     if writeback_service is not None:
         app.state.writeback_service = writeback_service
+    if intake_service is not None:
+        app.state.intake_service = intake_service
     app.state.authenticator = authenticator or JwtAuthenticator(
         secret=os.environ["FUNDERMATCH_JWT_SECRET"],
         issuer=os.getenv("FUNDERMATCH_JWT_ISSUER", "fundermatch"),
@@ -125,6 +160,15 @@ def create_app(
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="precedent write-back is not configured",
+            )
+        return value
+
+    def intake(request: Request) -> BorrowerIntakeService:
+        value = getattr(request.app.state, "intake_service", None)
+        if value is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="borrower intake is not configured",
             )
         return value
 
@@ -175,6 +219,24 @@ def create_app(
             command_id=payload.command_id,
             reason=payload.reason,
         )
+
+    @app.post("/v1/intake", response_model=IntakeResult, status_code=201)
+    async def borrower_intake(
+        metadata: Annotated[str, Form()],
+        files: Annotated[list[UploadFile], File()],
+        actor: Annotated[ActorClaims, Depends(actor_from_token)],
+        intake_pipeline: Annotated[BorrowerIntakeService, Depends(intake)],
+    ) -> IntakeResult:
+        if ActorRole.PIPELINE not in actor.roles:
+            raise WorkflowAuthorizationError("pipeline role required")
+        try:
+            parsed = IntakeMetadata.model_validate_json(metadata)
+            payloads = []
+            for item in files:
+                payloads.append((item.filename or "", await item.read()))
+            return await intake_pipeline.process(parsed, tuple(payloads), actor)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.post("/v1/workflows/{application_id}/pipeline", response_model=TransitionResult)
     async def advance_pipeline(

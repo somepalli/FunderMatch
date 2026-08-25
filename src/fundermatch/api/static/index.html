@@ -26,8 +26,12 @@
           <button type="submit" class="button button-primary">Open case</button>
         </div>
       </form>
-      <button class="button button-quiet" id="open-settings" type="button"
-              aria-haspopup="dialog">Credentials</button>
+      <div class="header-actions">
+        <button class="button button-primary" id="open-intake" type="button"
+                aria-haspopup="dialog">New borrower</button>
+        <button class="button button-quiet" id="open-settings" type="button"
+                aria-haspopup="dialog">Credentials</button>
+      </div>
     </header>
 
     <main id="workspace" class="shell">
@@ -127,6 +131,35 @@
         <div class="dialog-actions">
           <button class="button button-quiet" type="button" id="clear-tokens">Clear</button>
           <button class="button button-primary" value="save">Save for this tab</button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="intake-dialog" class="dialog intake-dialog">
+      <form id="intake-form">
+        <div class="dialog-header">
+          <div><p class="eyebrow">PDF intake</p><h2>New borrower application</h2></div>
+          <button class="icon-button" type="button" id="close-intake" aria-label="Close intake">×</button>
+        </div>
+        <p class="dialog-copy">Upload up to 10 local PDFs. FinDocIQ extracts revenue, EBITDA margin, and DSCR with page-level provenance. Other eligibility facts must be supplied; they are never guessed.</p>
+        <div class="intake-grid">
+          <label>Application ID<input name="application_id" required pattern="[A-Za-z0-9][A-Za-z0-9._-]{2,199}" placeholder="APP-2026-001"></label>
+          <label>Borrower name<input name="borrower_name" required></label>
+          <label>Industry<input name="industry" required placeholder="Auto components"></label>
+          <label>Region<input name="region" required placeholder="South"></label>
+          <label>Requested amount (₹ crore)<input name="requested_amount_crore" type="number" min="0.01" step="0.01" required></label>
+          <label>Debt / EBITDA<input name="debt_to_ebitda" type="number" min="0" step="0.01" required></label>
+          <label>Collateral cover<input name="collateral_cover" type="number" min="0" step="0.01" required></label>
+          <label>Years operating<input name="years_operating" type="number" min="0" step="1" required></label>
+          <label>Employee count<input name="employee_count" type="number" min="1" step="1" required></label>
+        </div>
+        <label>Finance context<textarea name="finance_context" rows="2" maxlength="2000" required></textarea></label>
+        <label>Operations context<textarea name="operations_context" rows="2" maxlength="2000" required></textarea></label>
+        <label>Borrower PDFs<input name="files" type="file" accept="application/pdf,.pdf" multiple required></label>
+        <p id="intake-progress" class="dialog-copy" hidden></p>
+        <div class="dialog-actions">
+          <button class="button button-quiet" type="button" id="cancel-intake">Cancel</button>
+          <button class="button button-primary" type="submit">Process and queue review</button>
         </div>
       </form>
     </dialog>

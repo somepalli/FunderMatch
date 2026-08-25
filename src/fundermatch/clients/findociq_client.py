@@ -5,7 +5,12 @@ from __future__ import annotations
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError
 
-from fundermatch.clients.findociq_contract import ExtractRequest, ExtractResponse
+from fundermatch.clients.findociq_contract import (
+    ExtractRequest,
+    ExtractResponse,
+    IngestDocumentRequest,
+    IngestDocumentResponse,
+)
 
 
 class FinDocIQClientConfig(BaseModel):
@@ -13,6 +18,7 @@ class FinDocIQClientConfig(BaseModel):
 
     base_url: HttpUrl
     timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+    ingest_token: str | None = Field(default=None, min_length=16)
 
 
 class FinDocIQUnavailable(RuntimeError):
@@ -53,7 +59,7 @@ class FinDocIQClient:
         try:
             response = await self._client.post(
                 "/extract",
-                json=request.model_dump(mode="json", exclude_none=True),
+                json=request.model_dump(mode="json", exclude_none=True, exclude_defaults=True),
             )
             response.raise_for_status()
         except (httpx.RequestError, httpx.HTTPStatusError) as error:
@@ -64,4 +70,23 @@ class FinDocIQClient:
         except ValidationError as error:
             raise FinDocIQContractError(
                 "FinDocIQ returned an invalid extraction contract"
+            ) from error
+
+    async def ingest(self, request: IngestDocumentRequest) -> IngestDocumentResponse:
+        if self._config.ingest_token is None:
+            raise FinDocIQUnavailable("FinDocIQ ingestion token is not configured")
+        try:
+            response = await self._client.post(
+                "/v1/documents",
+                json=request.model_dump(mode="json"),
+                headers={"X-FinDocIQ-Ingest-Token": self._config.ingest_token},
+            )
+            response.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPStatusError) as error:
+            raise FinDocIQUnavailable("FinDocIQ document ingestion failed") from error
+        try:
+            return IngestDocumentResponse.model_validate_json(response.content)
+        except ValidationError as error:
+            raise FinDocIQContractError(
+                "FinDocIQ returned an invalid ingestion contract"
             ) from error

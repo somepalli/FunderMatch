@@ -4,9 +4,10 @@ from fastapi.testclient import TestClient
 
 from fundermatch.api.app import create_app
 from fundermatch.api.auth import JwtAuthenticator
+from fundermatch.intake import IntakeDocument, IntakeResult
 from fundermatch.workflow.demo import issue_token
 from fundermatch.workflow.repository import InMemoryWorkflowRepository
-from fundermatch.workflow.schema import ActorClaims, ActorRole
+from fundermatch.workflow.schema import ActorClaims, ActorRole, WorkflowRecord, WorkflowState
 
 
 class ConsoleAuthenticator:
@@ -15,6 +16,39 @@ class ConsoleAuthenticator:
             actor_id="console-test",
             display_name="Console Test",
             roles={ActorRole.HUMAN_REVIEWER},
+        )
+
+
+class PipelineAuthenticator:
+    def authenticate(self, token: str) -> ActorClaims:
+        return ActorClaims(
+            actor_id="intake-test",
+            display_name="Intake Test",
+            roles={ActorRole.PIPELINE},
+        )
+
+
+class FakeIntakeService:
+    def __init__(self) -> None:
+        self.calls = []
+
+    async def process(self, metadata, files, actor):  # type: ignore[no-untyped-def]
+        self.calls.append((metadata, files, actor))
+        return IntakeResult(
+            workflow=WorkflowRecord(
+                application_id=metadata.application_id,
+                state=WorkflowState.AWAITING_HUMAN,
+                version=4,
+            ),
+            documents=(
+                IntakeDocument(
+                    filename="borrower.pdf",
+                    sha256="a" * 64,
+                    document_id="b" * 64,
+                    page_count=1,
+                    chunk_count=2,
+                ),
+            ),
         )
 
 
@@ -44,6 +78,40 @@ def test_console_assets_are_local_and_use_session_scoped_tokens() -> None:
     assert "expected_version" in script.text
     assert "/decision" in script.text
     assert "/precedent" in script.text
+    assert "/v1/intake" in script.text
+
+
+def test_pipeline_can_upload_real_pdf_boundary() -> None:
+    intake = FakeIntakeService()
+    client = TestClient(
+        create_app(
+            InMemoryWorkflowRepository(),
+            PipelineAuthenticator(),
+            intake_service=intake,  # type: ignore[arg-type]
+        )
+    )
+    metadata = {
+        "application_id": "APP-UPLOAD-1",
+        "borrower_name": "Borrower Ltd",
+        "industry": "Engineering",
+        "region": "South",
+        "requested_amount_crore": "25",
+        "debt_to_ebitda": "2.5",
+        "collateral_cover": "1.2",
+        "years_operating": 9,
+        "employee_count": 100,
+        "finance_context": "Audited FY2025 statements supplied.",
+        "operations_context": "Operating plant is active.",
+    }
+    response = client.post(
+        "/v1/intake",
+        data={"metadata": __import__("json").dumps(metadata)},
+        files=[("files", ("borrower.pdf", b"%PDF-1.7 test", "application/pdf"))],
+        headers={"Authorization": "Bearer pipeline-token"},
+    )
+    assert response.status_code == 201
+    assert response.json()["workflow"]["state"] == "AWAITING_HUMAN"
+    assert intake.calls[0][1][0][0] == "borrower.pdf"
 
 
 def test_demo_tokens_are_short_lived_signed_role_claims() -> None:

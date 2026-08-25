@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fundermatch"
-version = "0.6.0"
+version = "0.7.0"
 description = "Human-decided, rule-gated funder matching with precedent retrieval"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -16,6 +16,7 @@ dependencies = [
   "pydantic==2.10.3",
   "PyJWT==2.10.1",
   "PyYAML==6.0.3",
+  "python-multipart==0.0.20",
   "qdrant-client==1.18.0",
   "uvicorn==0.35.0",
 ]

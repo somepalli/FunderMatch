@@ -32,6 +32,9 @@ const elements = {
   sourceTitle: document.querySelector("#source-title"),
   sourceContent: document.querySelector("#source-content"),
   toastRegion: document.querySelector("#toast-region"),
+  intake: document.querySelector("#intake-dialog"),
+  intakeForm: document.querySelector("#intake-form"),
+  intakeProgress: document.querySelector("#intake-progress"),
 };
 
 const tokenKeys = {
@@ -81,10 +84,11 @@ function authToken(preferred = "reviewer") {
 async function api(path, options = {}, preferredRole = "reviewer") {
   const bearer = authToken(preferredRole);
   if (!bearer) throw new Error("Add a reviewer or pipeline token under Credentials.");
+  const isForm = options.body instanceof FormData;
   const response = await fetch(path, {
     ...options,
     headers: {
-      "Content-Type": "application/json",
+      ...(isForm ? {} : { "Content-Type": "application/json" }),
       Authorization: `Bearer ${bearer}`,
       ...(options.headers || {}),
     },
@@ -513,6 +517,47 @@ document.querySelector("#open-settings").addEventListener("click", () => {
   elements.reviewerToken.value = token("reviewer");
   elements.pipelineToken.value = token("pipeline");
   elements.settings.showModal();
+});
+document.querySelector("#open-intake").addEventListener("click", () => {
+  if (!token("pipeline")) {
+    notice("Add a pipeline token under Credentials before borrower intake.", "error");
+    return elements.settings.showModal();
+  }
+  elements.intake.showModal();
+});
+document.querySelector("#close-intake").addEventListener("click", () => elements.intake.close());
+document.querySelector("#cancel-intake").addEventListener("click", () => elements.intake.close());
+elements.intakeForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const fields = new FormData(elements.intakeForm);
+  const files = fields.getAll("files");
+  const metadata = {};
+  for (const name of ["application_id", "borrower_name", "industry", "region", "requested_amount_crore", "debt_to_ebitda", "collateral_cover", "years_operating", "employee_count", "finance_context", "operations_context"]) {
+    metadata[name] = fields.get(name);
+  }
+  metadata.years_operating = Number(metadata.years_operating);
+  metadata.employee_count = Number(metadata.employee_count);
+  const body = new FormData();
+  body.append("metadata", JSON.stringify(metadata));
+  files.forEach((file) => body.append("files", file));
+  const submit = elements.intakeForm.querySelector('[type="submit"]');
+  submit.disabled = true;
+  elements.intakeProgress.hidden = false;
+  elements.intakeProgress.textContent = "Parsing PDFs, indexing evidence, extracting cited metrics, and evaluating funders. This can take several minutes on first model load.";
+  try {
+    const result = await api("/v1/intake", { method: "POST", body }, "pipeline");
+    state.applicationId = result.workflow.application_id;
+    elements.applicationId.value = state.applicationId;
+    elements.intake.close();
+    elements.intakeForm.reset();
+    toast(`${result.documents.length} document(s) processed; case queued for human review.`);
+    await loadCase(state.applicationId, { quiet: true });
+  } catch (error) {
+    elements.intakeProgress.textContent = error.message;
+    elements.intakeProgress.className = "dialog-copy intake-error";
+  } finally {
+    submit.disabled = false;
+  }
 });
 elements.settingsForm.addEventListener("submit", (event) => {
   event.preventDefault();
