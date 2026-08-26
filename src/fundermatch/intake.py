@@ -30,6 +30,9 @@ from fundermatch.workflow.schema import (
 )
 from fundermatch.workflow.service import WorkflowService
 
+MAX_PDF_BYTES = 25 * 1024 * 1024
+MAX_BATCH_BYTES = 512 * 1024 * 1024
+
 
 class IntakeMetadata(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
@@ -73,7 +76,8 @@ class BorrowerIntakeService:
         workflow: WorkflowService,
         retriever: RuleGatedPrecedentRetriever,
         policies: tuple[FunderPolicy, ...],
-        max_file_bytes: int = 25 * 1024 * 1024,
+        max_file_bytes: int = MAX_PDF_BYTES,
+        max_batch_bytes: int = MAX_BATCH_BYTES,
     ) -> None:
         self.storage_root = storage_root.resolve()
         self.findociq = findociq
@@ -81,6 +85,7 @@ class BorrowerIntakeService:
         self.retriever = retriever
         self.policies = policies
         self.max_file_bytes = max_file_bytes
+        self.max_batch_bytes = max_batch_bytes
 
     async def process(
         self,
@@ -90,8 +95,8 @@ class BorrowerIntakeService:
     ) -> IntakeResult:
         if not files:
             raise ValueError("at least one borrower PDF is required")
-        if len(files) > 10:
-            raise ValueError("at most 10 PDFs are accepted per application")
+        if sum(len(content) for _, content in files) > self.max_batch_bytes:
+            raise ValueError("PDF batch exceeds the 512 MB aggregate limit")
         folder = self.storage_root / metadata.application_id
         documents_folder = folder / "documents"
         documents_folder.mkdir(parents=True, exist_ok=False)

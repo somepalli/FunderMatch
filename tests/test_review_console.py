@@ -114,6 +114,41 @@ def test_pipeline_can_upload_real_pdf_boundary() -> None:
     assert intake.calls[0][1][0][0] == "borrower.pdf"
 
 
+def test_upload_boundary_accepts_more_than_ten_pdfs() -> None:
+    intake = FakeIntakeService()
+    client = TestClient(
+        create_app(
+            InMemoryWorkflowRepository(),
+            PipelineAuthenticator(),
+            intake_service=intake,  # type: ignore[arg-type]
+        )
+    )
+    metadata = {
+        "application_id": "APP-MANY-PDFS",
+        "borrower_name": "Borrower Ltd",
+        "industry": "Engineering",
+        "region": "South",
+        "requested_amount_crore": "25",
+        "debt_to_ebitda": "2.5",
+        "collateral_cover": "1.2",
+        "years_operating": 9,
+        "employee_count": 100,
+        "finance_context": "Audited statements supplied.",
+        "operations_context": "Operating plant is active.",
+    }
+    response = client.post(
+        "/v1/intake",
+        data={"metadata": __import__("json").dumps(metadata)},
+        files=[
+            ("files", (f"borrower-{index}.pdf", b"%PDF-1.7 test", "application/pdf"))
+            for index in range(12)
+        ],
+        headers={"Authorization": "Bearer pipeline-token"},
+    )
+    assert response.status_code == 201
+    assert len(intake.calls[0][1]) == 12
+
+
 def test_demo_tokens_are_short_lived_signed_role_claims() -> None:
     secret = "phase-six-demo-secret-longer-than-thirty-two-characters"
     encoded = issue_token(

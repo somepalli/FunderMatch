@@ -292,7 +292,8 @@ content security policy blocks third-party scripts and framing.
 - Demo data is synthetic and makes no match-accuracy claim.
 ## Borrower PDF intake
 
-The review console now accepts real borrower PDFs through **New borrower**. Files are
+The review console accepts any number of real borrower PDFs through **New borrower**,
+subject to 25 MB per file and 512 MB per batch. Files are
 stored outside Git, sent to FinDocIQ over its authenticated HTTP contract, indexed in
 Qdrant, and queried only within the uploaded document IDs. FinDocIQ extracts annual
 revenue, EBITDA margin, and DSCR with `(document_id, page, bbox)` citations. The form

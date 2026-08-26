@@ -16,7 +16,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from fundermatch.api.auth import JwtAuthenticator, TokenAuthenticator
 from fundermatch.clients.findociq_client import FinDocIQClient, FinDocIQClientConfig
-from fundermatch.intake import BorrowerIntakeService, IntakeMetadata, IntakeResult
+from fundermatch.intake import (
+    MAX_BATCH_BYTES,
+    MAX_PDF_BYTES,
+    BorrowerIntakeService,
+    IntakeMetadata,
+    IntakeResult,
+)
 from fundermatch.matching.retriever import RetrievalConfig, RuleGatedPrecedentRetriever
 from fundermatch.precedent.embedder import BgeM3Config, BgeM3Embedder
 from fundermatch.precedent.store import QdrantPrecedentConfig, QdrantPrecedentStore
@@ -123,7 +129,7 @@ def create_app(
             app.state.writeback_service.store.client.close()
             await pool.close()
 
-    app = FastAPI(title="FunderMatch HITL API", version="0.7.0", lifespan=lifespan)
+    app = FastAPI(title="FunderMatch HITL API", version="0.7.1", lifespan=lifespan)
     static_dir = Path(__file__).with_name("static")
     app.mount("/assets", StaticFiles(directory=static_dir), name="review-assets")
     if repository is not None:
@@ -232,8 +238,15 @@ def create_app(
         try:
             parsed = IntakeMetadata.model_validate_json(metadata)
             payloads = []
+            total_bytes = 0
             for item in files:
-                payloads.append((item.filename or "", await item.read()))
+                content = await item.read(MAX_PDF_BYTES + 1)
+                if len(content) > MAX_PDF_BYTES:
+                    raise ValueError(f"{item.filename or 'PDF'} exceeds the 25 MB limit")
+                total_bytes += len(content)
+                if total_bytes > MAX_BATCH_BYTES:
+                    raise ValueError("PDF batch exceeds the 512 MB aggregate limit")
+                payloads.append((item.filename or "", content))
             return await intake_pipeline.process(parsed, tuple(payloads), actor)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
