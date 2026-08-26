@@ -17,7 +17,7 @@ class FinDocIQClientConfig(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     base_url: HttpUrl
-    timeout_seconds: float = Field(default=120.0, gt=0, le=600)
+    timeout_seconds: float = Field(default=120.0, gt=0, le=7200)
     ingest_token: str | None = Field(default=None, min_length=16)
 
 

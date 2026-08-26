@@ -99,7 +99,9 @@ class BorrowerIntakeService:
             raise ValueError("PDF batch exceeds the 512 MB aggregate limit")
         folder = self.storage_root / metadata.application_id
         documents_folder = folder / "documents"
-        documents_folder.mkdir(parents=True, exist_ok=False)
+        if (folder / "manifest.json").exists():
+            raise ValueError(f"application {metadata.application_id} is already processed")
+        documents_folder.mkdir(parents=True, exist_ok=True)
         documents: list[IntakeDocument] = []
         try:
             for filename, content in files:
@@ -166,6 +168,7 @@ class BorrowerIntakeService:
             (folder / "manifest.json").write_text(
                 json.dumps(manifest, indent=2), encoding="utf-8"
             )
+            (folder / "FAILED").unlink(missing_ok=True)
             return IntakeResult(workflow=result.workflow, documents=tuple(documents))
         except Exception:
             (folder / "FAILED").write_text(

@@ -15,7 +15,11 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from fundermatch.api.auth import JwtAuthenticator, TokenAuthenticator
-from fundermatch.clients.findociq_client import FinDocIQClient, FinDocIQClientConfig
+from fundermatch.clients.findociq_client import (
+    FinDocIQClient,
+    FinDocIQClientConfig,
+    FinDocIQUnavailable,
+)
 from fundermatch.intake import (
     MAX_BATCH_BYTES,
     MAX_PDF_BYTES,
@@ -101,7 +105,7 @@ def create_app(
             findociq = FinDocIQClient(
                 FinDocIQClientConfig(
                     base_url=os.getenv("FINDOCIQ_BASE_URL", "http://127.0.0.1:8989"),
-                    timeout_seconds=600,
+                    timeout_seconds=7200,
                     ingest_token=ingest_token,
                 )
             )
@@ -129,7 +133,7 @@ def create_app(
             app.state.writeback_service.store.client.close()
             await pool.close()
 
-    app = FastAPI(title="FunderMatch HITL API", version="0.7.1", lifespan=lifespan)
+    app = FastAPI(title="FunderMatch HITL API", version="0.7.2", lifespan=lifespan)
     static_dir = Path(__file__).with_name("static")
     app.mount("/assets", StaticFiles(directory=static_dir), name="review-assets")
     if repository is not None:
@@ -248,6 +252,11 @@ def create_app(
                     raise ValueError("PDF batch exceeds the 512 MB aggregate limit")
                 payloads.append((item.filename or "", content))
             return await intake_pipeline.process(parsed, tuple(payloads), actor)
+        except FinDocIQUnavailable as error:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="FinDocIQ could not process the borrower documents; retry is safe",
+            ) from error
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
