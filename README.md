@@ -6,7 +6,7 @@ extraction only through FinDocIQ's versioned HTTP contract.
 
 ## Current status
 
-Phases 0–6 are implemented:
+Phases 0–6 and the opt-in resilient agent supervisor are implemented:
 
 - async HTTP-only `FinDocIQClient`;
 - local Pydantic copy of `/extract` contract version `1.0`;
@@ -54,9 +54,58 @@ Phases 0–6 are implemented:
   separate reviewer and pipeline credentials, and immutable audit history;
 - an invented demo-case bootstrap that issues short-lived local JWTs without
   weakening production authentication.
+- a fixed LangGraph supervisor with checkpointed document processing, financial
+  extraction, eligibility, eligible-only retrieval, suggestion, guardrail, and
+  human-handoff workers;
+- PostgreSQL-backed application memory with resume, cancel, sanitized status,
+  idempotent commands, and durable human-review interrupts;
+- deterministic citation, evidence-ownership, numeric-grounding,
+  eligible-funder, authority, receipt, and checkpoint guardrails;
+- content-safe JSONL and self-hosted Langfuse OTLP spans, scheduled retention
+  maintenance, dependency readiness, held-out synthetic evals, and
+  failure-injection coverage.
 
 The synthetic corpus demonstrates the mechanism only. It supports no matching
 accuracy, credit-quality, or fair-lending claim.
+
+Graph execution is intentionally disabled by default through
+`FUNDERMATCH_AGENT_ORCHESTRATION_ENABLED=false`. The deterministic legacy intake
+remains the rollback path until the manual GPU and service-outage release gates
+have been exercised in the target environment.
+
+## Runtime architecture
+
+FunderMatch owns workflow authority, eligibility, precedent matching, guardrails,
+and the human decision boundary. FinDocIQ remains a separately deployed document
+intelligence service accessed only through HTTP.
+
+```text
+Browser / pipeline client
+  -> FunderMatch FastAPI + review console
+  -> fixed LangGraph supervisor
+  -> FinDocIQ document processing and cited metric extraction
+  -> deterministic eligibility rules
+  -> eligible-only Qdrant precedent retrieval
+  -> advisory suggestion assembly
+  -> deterministic guardrail validation
+  -> durable human review
+  -> verified precedent write-back after the human decision
+```
+
+| Runtime dependency | Local endpoint | Responsibility | Failure behavior |
+| --- | --- | --- | --- |
+| FunderMatch API/UI | `http://127.0.0.1:8977` | Intake, orchestration, review, recovery | Primary service |
+| PostgreSQL | `127.0.0.1:7444` | Authoritative workflow/audit plus isolated LangGraph checkpoints | Fails readiness |
+| Qdrant | `http://127.0.0.1:6999` | Eligible-only precedent retrieval and verified write-back | Retryable/needs attention |
+| FinDocIQ | `http://127.0.0.1:8989` | PDF ingestion and cited financial extraction | Retryable dependency failure |
+| vLLM | `http://127.0.0.1:8900/v1` | Pinned Gemma narrative and send-back routing | Retryable or safe stop |
+| Self-hosted Langfuse | `http://127.0.0.1:3000` | Content-safe operational traces | Warning-only; workflow continues |
+
+The system never sends PDFs, extracted text, borrower names, financial values,
+prompts, credentials, or raw checkpoint state to Langfuse. PostgreSQL workflow
+and audit tables remain authoritative; LangGraph checkpoints are operational
+resume state, and Qdrant receives long-term memory only after verified human
+review.
 
 ## Setup
 
@@ -291,6 +340,7 @@ content security policy blocks third-party scripts and framing.
   transition, or optimistic-version checks.
 - Case memory means Qdrant precedent retrieval, not online model training.
 - Demo data is synthetic and makes no match-accuracy claim.
+
 ## Borrower PDF intake
 
 The review console accepts any number of real borrower PDFs through **New borrower**,
