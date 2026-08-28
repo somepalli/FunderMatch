@@ -36,6 +36,16 @@ class HumanAction(StrEnum):
     SEND_BACK = "send_back"
 
 
+class RestartStage(StrEnum):
+    SUPERVISOR = "supervisor"
+    DOCUMENT_PROCESSING = "document_processing"
+    FINANCIAL_ANALYSIS = "financial_analysis"
+    ELIGIBILITY = "eligibility"
+    PRECEDENT_RETRIEVAL = "precedent_retrieval"
+    SUGGESTION = "suggestion"
+    GUARDRAILS = "guardrails"
+
+
 class ActorClaims(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -64,6 +74,7 @@ class HumanDecisionCommand(BaseModel):
     reason: str = Field(min_length=1, max_length=2000)
     conditions: tuple[str, ...] = ()
     overrides: tuple[DecisionOverride, ...] = ()
+    restart_stage: RestartStage | None = None
 
     @model_validator(mode="after")
     def validate_conditions(self) -> "HumanDecisionCommand":
@@ -75,7 +86,18 @@ class HumanDecisionCommand(BaseModel):
             raise ValueError("send_back does not select a funder")
         if self.action != HumanAction.SEND_BACK and self.funder_id is None:
             raise ValueError("a decided outcome requires funder_id")
+        if self.action != HumanAction.SEND_BACK and self.restart_stage is not None:
+            raise ValueError("restart_stage is only valid for send_back")
         return self
+
+
+class PipelineReopenCommand(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    command_id: UUID = Field(default_factory=uuid4)
+    expected_version: int = Field(ge=0)
+    restart_stage: RestartStage
+    reason: str = Field(min_length=1, max_length=2000)
 
 
 class HumanDecisionRecord(BaseModel):

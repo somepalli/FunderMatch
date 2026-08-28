@@ -253,8 +253,9 @@ same-origin. The interface is deliberately not conversational:
 
 Reviewer and pipeline JWTs are separate. They are stored only in browser-tab
 `sessionStorage`, never in a URL or persistent browser storage. A reviewer can
-record the human outcome; a pipeline credential is required for the subsequent
-Qdrant write-back. Selecting an excluded funder renders a required justification
+record the human outcome; the internal pipeline identity performs verified,
+idempotent Qdrant write-back and completes graph memory only after its receipt is
+confirmed. Selecting an excluded funder renders a required justification
 field for every failed hard rule.
 
 Start the local services and create an invented review case:
@@ -300,6 +301,24 @@ revenue, EBITDA margin, and DSCR with `(document_id, page, bbox)` citations. The
 requires the remaining hard-rule inputs because the system never guesses eligibility
 facts.
 
+An upload is sent as one ingestion batch. FinDocIQ sleeps local vLLM once, gives the
+GPU to Docling/OCR and BGE-M3 for the complete batch, releases those models, and wakes
+vLLM before cited metric extraction. A failure still triggers the wake path, so one bad
+PDF does not intentionally leave generation offline.
+
+The review console submits new work to `POST /v1/intake-jobs`, which returns `202`
+with a durable job ID after the upload is accepted. It then polls the authenticated
+`events_url` and renders the current document, GPU hand-off, parsing, chunking,
+embedding, Qdrant indexing, metric extraction, rule gating, and review-queue stages.
+Activity events contain filenames and counts but never PDF text, prompts, credentials,
+or raw model responses. Reload-safe job state and the append-only timeline live in
+Postgres tables created by `migrations/003_intake_activity.sql`; interrupted jobs are
+marked failed and retryable on API restart instead of appearing to run forever.
+
+The original synchronous `POST /v1/intake` remains available for compatibility with
+local scripts. New browser integrations should use the job endpoint and
+`GET /v1/intake-jobs/{job_id}/events?after=<sequence>`.
+
 Use an external directory (do not place borrower files in this repository):
 
 ```powershell
@@ -313,3 +332,79 @@ Each successful intake is stored under `<intake-dir>/<application-id>/` with the
 original PDFs and a manifest of SHA-256 hashes and FinDocIQ document IDs. The pipeline
 then runs hard rules before precedent retrieval and stops at `AWAITING_HUMAN`; no AI
 output approves or rejects a borrower.
+
+## Agent memory and recovery
+
+LangGraph is an operational supervisor around the deterministic pipeline; it does
+not contain extraction, eligibility, ranking, or lending-decision logic. Each
+application uses its `application_id` as an isolated LangGraph `thread_id`.
+Checkpoints live in a dedicated `langgraph` schema in the same Postgres database,
+while `workflow_cases` and the append-only workflow audit remain authoritative.
+
+Checkpoint state is a strict 256 KiB allow-list of IDs, SHA-256 hashes, cited
+findings, eligibility outcomes, guardrail results, stable command IDs, and write
+receipts. PDFs, base64 payloads, document chunks, prompts, raw model responses, and
+ReAct message histories cannot be serialized into it. Worker scratch state is
+ephemeral and defaults to an eight-tool-call budget.
+
+Run the additional migration once before enabling the supervisor:
+
+```powershell
+uv run fundermatch-migrate-memory
+```
+
+Retryable failures and human-review waits are retained until resolved or explicitly
+cancelled. `completed`, `cancelled`, and `failed_terminal` checkpoints become
+eligible for cleanup after 30 days. Stale non-terminal cases are flagged for an
+operator and are never deleted by retention cleanup. Qdrant long-term memory still
+accepts only finalized human-reviewed precedent through the existing write-back
+service.
+
+## Fixed agent flow and release gates
+
+The opt-in supervisor executes one code-owned order that a model or request cannot
+rearrange:
+
+```text
+Document processing -> Financial metric extraction -> Deterministic eligibility
+-> Eligible-only precedent retrieval -> Advisory suggestion assembly
+-> Deterministic guardrails -> Human-review handoff
+```
+
+Revenue, EBITDA margin, and DSCR have separate durable substep artifacts. A retry
+therefore resumes the missing metric without repeating completed FinDocIQ calls.
+Reviewer send-back can select an exact worker; `supervisor` uses pinned Gemma 3 at
+temperature 0 and stops at `needs_attention` when its route is ambiguous. Eligibility
+and guardrails can never be skipped. Approve, reject, and approve-with-conditions
+remain human-only actions and trigger verified precedent write-back; send-back is
+never precedent memory.
+
+Enable graph execution only for synthetic/demo runs until the manual GPU gate passes:
+
+```powershell
+$env:FUNDERMATCH_AGENT_ORCHESTRATION_ENABLED = "true"
+$env:FUNDERMATCH_VLLM_BASE_URL = "http://127.0.0.1:8900/v1"
+```
+
+The legacy intake remains the rollback path when the flag is false. Recovery exposes
+`POST /v1/intake-jobs/{job_id}/resume`,
+`POST /v1/intake-jobs/{job_id}/cancel`, and the sanitized
+`GET /v1/applications/{application_id}/memory`; no endpoint returns checkpoint
+payloads. The live activity panel shows worker, attempt, resume, guardrail, and
+checkpoint events separately from the authoritative workflow audit.
+
+FunderMatch emits content-safe local JSONL spans and optionally exports the same typed
+supervisor/worker spans to an existing self-hosted Langfuse OTLP endpoint. Traces
+contain identifiers, counts, timing, hashes, and safe error codes only--never borrower
+names, financial values, PDFs, extracted text, prompts, answers, credentials, raw
+exceptions, or checkpoint state. Langfuse failure is warning-only and cannot stop the
+workflow. `/ready` reports PostgreSQL, Qdrant, FinDocIQ, vLLM, and Langfuse separately;
+only Langfuse is non-blocking.
+
+The held-out release dataset is `evals/datasets/agent_release_cases.jsonl` with `n=24`
+invented applications: 8 eligible/aligned, 8 hard-rule boundary or ineligible, 4 with
+no close precedent, and 4 adversarial guardrail cases. Send-back routing has a separate
+dataset. Retrieval quality must be reported independently as eligible-only Recall@3,
+MRR, and nDCG with `n`; there is no aggregate credit-accuracy score. CPU/GPU p50 and
+p95 results are release outputs and are not claimed until the respective manual runs
+are executed.

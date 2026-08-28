@@ -284,6 +284,21 @@ button { cursor: pointer; }
 .intake-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 .75rem; }
 .dialog input { width: 100%; padding: .62rem .7rem; border: 1px solid #cbd8d5; border-radius: 8px; }
 .intake-error { color: var(--red); }
+.intake-activity { margin-top: .9rem; padding: .85rem; background: #f5f9f8; border: 1px solid var(--line); border-radius: 10px; }
+.activity-summary { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.activity-label { display: block; color: var(--faint); font-size: .62rem; text-transform: uppercase; letter-spacing: .08em; }
+.activity-summary strong { display: block; margin-top: .2rem; font-size: .78rem; }
+.activity-elapsed { color: var(--muted); font-size: .68rem; font-variant-numeric: tabular-nums; }
+.activity-track { height: 5px; margin-top: .65rem; overflow: hidden; background: #dfe9e7; border-radius: 999px; }
+.activity-bar { width: 3%; height: 100%; background: var(--teal); border-radius: inherit; transition: width .25s ease; }
+.activity-health { margin: .55rem 0 0; color: var(--muted); font-size: .66rem; }
+.activity-health.stalled { color: #9a6500; }
+.activity-events { max-height: 220px; margin: .7rem 0 0; padding: 0; overflow-y: auto; list-style: none; border-top: 1px solid var(--line); }
+.activity-event { display: grid; grid-template-columns: 12px 1fr auto; gap: .45rem; align-items: start; padding: .52rem 0; border-bottom: 1px solid #e3ecea; }
+.activity-event::before { content: ""; width: 8px; height: 8px; margin-top: .22rem; background: var(--teal); border-radius: 50%; }
+.activity-event.failed::before { background: var(--red); }
+.activity-event strong { display: block; font-size: .7rem; font-weight: 600; }
+.activity-event small { color: var(--faint); font-size: .6rem; white-space: nowrap; }
 .icon-button { width: 34px; height: 34px; color: var(--muted); background: var(--surface-soft); border: 0; border-radius: 50%; font-size: 1.25rem; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
 .source-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }

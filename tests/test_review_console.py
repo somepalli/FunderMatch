@@ -78,7 +78,9 @@ def test_console_assets_are_local_and_use_session_scoped_tokens() -> None:
     assert "expected_version" in script.text
     assert "/decision" in script.text
     assert "/precedent" in script.text
-    assert "/v1/intake" in script.text
+    assert "/v1/intake-jobs" in script.text
+    assert "activity-events" in styles.text
+    assert "fundermatch.activeIntakeJob" in script.text
 
 
 def test_pipeline_can_upload_real_pdf_boundary() -> None:

@@ -16,8 +16,10 @@ from fundermatch.workflow.schema import (
     HumanDecisionCommand,
     HumanDecisionRecord,
     PipelineAdvanceCommand,
+    PipelineReopenCommand,
     PrecedentWriteCommand,
     PrecedentWriteReceipt,
+    RestartStage,
     TransitionResult,
     WorkflowRecord,
     WorkflowState,
@@ -29,6 +31,15 @@ PIPELINE_TRANSITIONS = {
     WorkflowState.EXTRACTED: WorkflowState.RULE_GATED,
     WorkflowState.RULE_GATED: WorkflowState.AI_SUGGESTED,
     WorkflowState.AI_SUGGESTED: WorkflowState.AWAITING_HUMAN,
+}
+
+RESTART_STATES = {
+    RestartStage.DOCUMENT_PROCESSING: WorkflowState.INTAKE,
+    RestartStage.FINANCIAL_ANALYSIS: WorkflowState.INTAKE,
+    RestartStage.ELIGIBILITY: WorkflowState.EXTRACTED,
+    RestartStage.PRECEDENT_RETRIEVAL: WorkflowState.RULE_GATED,
+    RestartStage.SUGGESTION: WorkflowState.RULE_GATED,
+    RestartStage.GUARDRAILS: WorkflowState.AI_SUGGESTED,
 }
 
 
@@ -203,6 +214,57 @@ class WorkflowService:
                     "state": updated.state.value,
                     "version": updated.version,
                     "precedent_receipt": receipt.model_dump(mode="json"),
+                },
+            )
+            return updated, event
+
+        return await self._repository.transition(
+            application_id, str(command.command_id), transition
+        )
+
+    async def reopen_after_send_back(
+        self,
+        application_id: str,
+        command: PipelineReopenCommand,
+        actor: ActorClaims,
+    ) -> TransitionResult:
+        self._require_role(actor, ActorRole.HUMAN_REVIEWER)
+        if command.restart_stage == RestartStage.SUPERVISOR:
+            raise InvalidTransitionError("supervisor route must resolve to an explicit stage")
+
+        def transition(current: WorkflowRecord, sequence: int) -> tuple[WorkflowRecord, AuditEvent]:
+            self._require_version(current, command.expected_version)
+            if (
+                current.state != WorkflowState.HUMAN_DECIDED
+                or current.decision is None
+                or current.decision.action != HumanAction.SEND_BACK
+            ):
+                raise InvalidTransitionError(
+                    "pipeline reopen requires an authoritative send_back action"
+                )
+            now = utc_now()
+            target = RESTART_STATES[command.restart_stage]
+            updated = current.model_copy(
+                update={
+                    "state": target,
+                    "version": current.version + 1,
+                    "decision": None,
+                    "updated_at": now,
+                }
+            )
+            event = self._event(
+                command_id=command.command_id,
+                workflow=updated,
+                sequence=sequence,
+                actor=actor,
+                from_state=current.state,
+                to_state=target,
+                action="send_back_reopen",
+                reason=command.reason,
+                changes={
+                    "state": target.value,
+                    "version": updated.version,
+                    "restart_stage": command.restart_stage.value,
                 },
             )
             return updated, event

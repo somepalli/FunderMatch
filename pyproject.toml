@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fundermatch"
-version = "0.7.2"
+version = "0.8.0"
 description = "Human-decided, rule-gated funder matching with precedent retrieval"
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
@@ -13,12 +13,17 @@ dependencies = [
   "asyncpg==0.31.0",
   "fastapi==0.116.1",
   "httpx==0.28.1",
+  "langgraph==1.2.11",
+  "langgraph-checkpoint-postgres==3.1.2",
   "pydantic==2.10.3",
+  "psycopg[binary,pool]==3.3.4",
   "PyJWT==2.10.1",
   "PyYAML==6.0.3",
   "python-multipart==0.0.20",
   "qdrant-client==1.18.0",
   "uvicorn==0.35.0",
+  "opentelemetry-sdk==1.44.0",
+  "opentelemetry-exporter-otlp-proto-http==1.44.0",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +44,7 @@ fundermatch-migrate-workflow = "fundermatch.workflow.migrate:main"
 fundermatch-workflow-smoke = "fundermatch.workflow.smoke:main"
 fundermatch-writeback-smoke = "fundermatch.precedent.writeback_cli:main"
 fundermatch-demo-review = "fundermatch.workflow.demo:main"
+fundermatch-migrate-memory = "fundermatch.orchestration.postgres:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fundermatch"]

@@ -8,8 +8,11 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError
 from fundermatch.clients.findociq_contract import (
     ExtractRequest,
     ExtractResponse,
+    IngestBatchRequest,
+    IngestBatchResponse,
     IngestDocumentRequest,
     IngestDocumentResponse,
+    IngestionActivityResponse,
 )
 
 
@@ -72,6 +75,14 @@ class FinDocIQClient:
                 "FinDocIQ returned an invalid extraction contract"
             ) from error
 
+    async def health(self) -> bool:
+        try:
+            response = await self._client.get("/healthz", timeout=5.0)
+            response.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPStatusError):
+            return False
+        return True
+
     async def ingest(self, request: IngestDocumentRequest) -> IngestDocumentResponse:
         if self._config.ingest_token is None:
             raise FinDocIQUnavailable("FinDocIQ ingestion token is not configured")
@@ -90,3 +101,41 @@ class FinDocIQClient:
             raise FinDocIQContractError(
                 "FinDocIQ returned an invalid ingestion contract"
             ) from error
+
+    async def ingest_batch(self, request: IngestBatchRequest) -> IngestBatchResponse:
+        if self._config.ingest_token is None:
+            raise FinDocIQUnavailable("FinDocIQ ingestion token is not configured")
+        try:
+            response = await self._client.post(
+                "/v1/document-batches",
+                json=request.model_dump(mode="json"),
+                headers={"X-FinDocIQ-Ingest-Token": self._config.ingest_token},
+            )
+            response.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPStatusError) as error:
+            raise FinDocIQUnavailable("FinDocIQ document ingestion failed") from error
+        try:
+            return IngestBatchResponse.model_validate_json(response.content)
+        except ValidationError as error:
+            raise FinDocIQContractError(
+                "FinDocIQ returned an invalid ingestion contract"
+            ) from error
+
+    async def ingestion_activity(
+        self, batch_id: str, *, after: int = 0
+    ) -> IngestionActivityResponse:
+        if self._config.ingest_token is None:
+            raise FinDocIQUnavailable("FinDocIQ ingestion token is not configured")
+        try:
+            response = await self._client.get(
+                f"/v1/document-batches/{batch_id}/activity",
+                params={"after": after},
+                headers={"X-FinDocIQ-Ingest-Token": self._config.ingest_token},
+            )
+            response.raise_for_status()
+        except (httpx.RequestError, httpx.HTTPStatusError) as error:
+            raise FinDocIQUnavailable("FinDocIQ activity request failed") from error
+        try:
+            return IngestionActivityResponse.model_validate_json(response.content)
+        except ValidationError as error:
+            raise FinDocIQContractError("FinDocIQ returned an invalid activity contract") from error

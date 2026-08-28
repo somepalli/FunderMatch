@@ -23,8 +23,9 @@ approve with conditions, or send back.
 ## Architecture boundary
 
 Keep extraction, vectorization, rule evaluation, retrieval, and suggestion
-assembly as deterministic, linear Python. Do not add an orchestration framework
-to this half.
+assembly as deterministic, linear Python. LangGraph may coordinate these modules
+as bounded workers, but it must not move financial logic into graph routes or
+make eligibility or lending decisions.
 
 Use an explicit Postgres state machine for the small HITL branch set unless its
 complexity grows enough to justify LangGraph:
@@ -67,9 +68,9 @@ Work in order and do not begin a phase until the prior phase's tests pass:
 ## Anti-goals
 
 - No FinDocIQ internal imports.
-- No LangGraph in the linear pipeline.
+- No LangGraph inside the deterministic financial pipeline; checkpointed
+  orchestration may wrap it.
 - No chat UI.
 - No AI approval/rejection authority.
 - No Origa production intellectual property.
 - No match-accuracy claims based on synthetic data.
-

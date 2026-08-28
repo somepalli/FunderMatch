@@ -157,6 +157,18 @@
         <label>Operations context<textarea name="operations_context" rows="2" maxlength="2000" required></textarea></label>
         <label>Borrower PDFs<input name="files" type="file" accept="application/pdf,.pdf" multiple required></label>
         <p id="intake-progress" class="dialog-copy" hidden></p>
+        <section id="intake-activity" class="intake-activity" aria-live="polite" hidden>
+          <div class="activity-summary">
+            <div>
+              <span class="activity-label">Current activity</span>
+              <strong id="activity-stage">Preparing upload</strong>
+            </div>
+            <span id="activity-elapsed" class="activity-elapsed">0s</span>
+          </div>
+          <div class="activity-track"><div id="activity-bar" class="activity-bar"></div></div>
+          <p id="activity-health" class="activity-health">Connecting to the processing job…</p>
+          <ol id="activity-events" class="activity-events"></ol>
+        </section>
         <div class="dialog-actions">
           <button class="button button-quiet" type="button" id="cancel-intake">Cancel</button>
           <button class="button button-primary" type="submit">Process and queue review</button>

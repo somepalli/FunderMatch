@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 from base64 import b64encode
+from collections.abc import Awaitable, Callable
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from pathlib import Path
@@ -16,10 +17,12 @@ from fundermatch.clients.findociq_client import FinDocIQClient
 from fundermatch.clients.findociq_contract import (
     ExtractedFigure,
     ExtractRequest,
+    IngestBatchRequest,
     IngestDocumentRequest,
 )
 from fundermatch.matching.retriever import RuleGatedPrecedentRetriever
 from fundermatch.precedent.schema import EvidenceMetric, FinancialProfile
+from fundermatch.prompts import load_prompt
 from fundermatch.rules.schema import BorrowerApplication, FunderPolicy
 from fundermatch.suggest.assembler import SuggestionAssembler
 from fundermatch.workflow.schema import (
@@ -32,6 +35,8 @@ from fundermatch.workflow.service import WorkflowService
 
 MAX_PDF_BYTES = 25 * 1024 * 1024
 MAX_BATCH_BYTES = 512 * 1024 * 1024
+
+ProgressReporter = Callable[..., Awaitable[None]]
 
 
 class IntakeMetadata(BaseModel):
@@ -92,6 +97,9 @@ class BorrowerIntakeService:
         metadata: IntakeMetadata,
         files: tuple[tuple[str, bytes], ...],
         actor: ActorClaims,
+        *,
+        job_id: str | None = None,
+        progress: ProgressReporter | None = None,
     ) -> IntakeResult:
         if not files:
             raise ValueError("at least one borrower PDF is required")
@@ -104,8 +112,23 @@ class BorrowerIntakeService:
         documents_folder.mkdir(parents=True, exist_ok=True)
         documents: list[IntakeDocument] = []
         try:
-            for filename, content in files:
+            requests: list[IngestDocumentRequest] = []
+            await _report(
+                progress,
+                "validating_upload",
+                f"Validating {len(files)} uploaded PDF(s)",
+                total=len(files),
+            )
+            for index, (filename, content) in enumerate(files, start=1):
                 safe_name = Path(filename).name
+                await _report(
+                    progress,
+                    "validating_document",
+                    f"Validating {safe_name}",
+                    document_name=safe_name,
+                    document_index=index,
+                    document_count=len(files),
+                )
                 if safe_name != filename or not safe_name.lower().endswith(".pdf"):
                     raise ValueError("all uploaded files must be safely named PDFs")
                 if not content.startswith(b"%PDF-"):
@@ -114,29 +137,54 @@ class BorrowerIntakeService:
                     raise ValueError(f"{safe_name} exceeds the 25 MB limit")
                 digest = sha256(content).hexdigest()
                 (documents_folder / safe_name).write_bytes(content)
-                ingested = await self.findociq.ingest(
+                await _report(
+                    progress,
+                    "staged_document",
+                    f"Stored {safe_name} for processing",
+                    document_name=safe_name,
+                    document_index=index,
+                    document_count=len(files),
+                    completed=index,
+                    total=len(files),
+                )
+                requests.append(
                     IngestDocumentRequest(
                         filename=safe_name,
                         sha256=digest,
                         content_base64=b64encode(content).decode("ascii"),
                     )
                 )
+            await _report(
+                progress,
+                "submitting_batch",
+                "Submitting one GPU-optimized document batch to FinDocIQ",
+                total=len(requests),
+            )
+            ingested_batch = await self._ingest_with_activity(
+                IngestBatchRequest(batch_id=job_id, documents=tuple(requests)),
+                progress,
+            )
+            for ingested in ingested_batch.documents:
                 documents.append(
                     IntakeDocument(
-                        filename=safe_name,
-                        sha256=digest,
+                        filename=ingested.filename,
+                        sha256=ingested.sha256,
                         document_id=ingested.document_id,
                         page_count=ingested.page_count,
                         chunk_count=ingested.chunk_count,
                     )
                 )
-            application = await self._extract_application(metadata, tuple(documents))
-            retrieval = await asyncio.to_thread(
-                self.retriever.retrieve, application, self.policies
+            application = await self._extract_application(
+                metadata, tuple(documents), progress=progress
             )
-            suggestion = SuggestionAssembler().assemble(
-                application, self.policies, retrieval
+            await _report(progress, "rule_gating", "Evaluating deterministic funder rules")
+            retrieval = await asyncio.to_thread(self.retriever.retrieve, application, self.policies)
+            await _report(
+                progress,
+                "assembling_suggestions",
+                "Assembling eligible funders and precedent evidence",
             )
+            suggestion = SuggestionAssembler().assemble(application, self.policies, retrieval)
             result = await self.workflow.create(
                 metadata.application_id, actor, reason="Borrower PDFs accepted into intake"
             )
@@ -165,10 +213,13 @@ class BorrowerIntakeService:
                 "documents": [item.model_dump(mode="json") for item in documents],
                 "workflow_state": result.workflow.state.value,
             }
-            (folder / "manifest.json").write_text(
-                json.dumps(manifest, indent=2), encoding="utf-8"
-            )
+            (folder / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
             (folder / "FAILED").unlink(missing_ok=True)
+            await _report(
+                progress,
+                "awaiting_human",
+                "Case is ready for authoritative human review",
+            )
             return IntakeResult(workflow=result.workflow, documents=tuple(documents))
         except Exception:
             (folder / "FAILED").write_text(
@@ -177,19 +228,27 @@ class BorrowerIntakeService:
             raise
 
     async def _extract_application(
-        self, metadata: IntakeMetadata, documents: tuple[IntakeDocument, ...]
+        self,
+        metadata: IntakeMetadata,
+        documents: tuple[IntakeDocument, ...],
+        *,
+        progress: ProgressReporter | None = None,
     ) -> BorrowerApplication:
         document_ids = tuple(item.document_id for item in documents)
-        specs = (
-            ("annual_revenue_crore", "Extract the latest annual revenue in INR crore."),
-            ("ebitda_margin_pct", "Extract the latest EBITDA margin percentage."),
-            ("dscr", "Extract the latest debt service coverage ratio (DSCR)."),
-        )
+        metrics = ("annual_revenue_crore", "ebitda_margin_pct", "dscr")
         evidence = []
-        for name, question in specs:
+        for index, name in enumerate(metrics, start=1):
+            await _report(
+                progress,
+                "extracting_metric",
+                f"Extracting cited {name.replace('_', ' ')}",
+                metric=name,
+                completed=index - 1,
+                total=len(metrics),
+            )
             response = await self.findociq.extract(
                 ExtractRequest(
-                    question=question,
+                    question=load_prompt(f"extract_{name}"),
                     question_id=f"{metadata.application_id}:{name}",
                     document_ids=document_ids,
                 )
@@ -203,6 +262,14 @@ class BorrowerIntakeService:
                     period=figure.period or "latest reported period",
                     citation=figure.citation,
                 )
+            )
+            await _report(
+                progress,
+                "metric_completed",
+                f"Extracted cited {name.replace('_', ' ')}",
+                metric=name,
+                completed=index,
+                total=len(metrics),
             )
         values = {item.name: item.value for item in evidence}
         return BorrowerApplication(
@@ -224,6 +291,54 @@ class BorrowerIntakeService:
             finance_context=metadata.finance_context,
             operations_context=metadata.operations_context,
         )
+
+    async def _ingest_with_activity(
+        self,
+        request: IngestBatchRequest,
+        progress: ProgressReporter | None,
+    ):
+        task = asyncio.create_task(self.findociq.ingest_batch(request))
+        last_sequence = 0
+        activity_method = getattr(self.findociq, "ingestion_activity", None)
+        while not task.done():
+            await asyncio.wait({task}, timeout=0.75)
+            if task.done() or activity_method is None or request.batch_id is None:
+                continue
+            try:
+                activity = await activity_method(request.batch_id, after=last_sequence)
+            except Exception:  # Activity is advisory; the batch response remains authoritative.
+                continue
+            for event in activity.events:
+                last_sequence = max(last_sequence, event.sequence)
+                await _report(
+                    progress,
+                    event.stage,
+                    event.message,
+                    document_name=event.document_name,
+                    document_index=event.document_index,
+                    document_count=event.document_count,
+                    completed=event.completed,
+                    total=event.total,
+                )
+        result = await task
+        if activity_method is not None and request.batch_id is not None:
+            try:
+                activity = await activity_method(request.batch_id, after=last_sequence)
+            except Exception:  # Activity is advisory; the receipt remains authoritative.
+                pass
+            else:
+                for event in activity.events:
+                    await _report(
+                        progress,
+                        event.stage,
+                        event.message,
+                        document_name=event.document_name,
+                        document_index=event.document_index,
+                        document_count=event.document_count,
+                        completed=event.completed,
+                        total=event.total,
+                    )
+        return result
 
 
 def _select_figure(figures: tuple[ExtractedFigure, ...], metric: str) -> ExtractedFigure:
@@ -252,6 +367,18 @@ def _decimal(raw: str) -> Decimal:
 
 
 def _default_unit(metric: str) -> str:
-    return {"annual_revenue_crore": "INR crore", "ebitda_margin_pct": "%", "dscr": "x"}[
-        metric
-    ]
+    return {"annual_revenue_crore": "INR crore", "ebitda_margin_pct": "%", "dscr": "x"}[metric]
+
+
+async def _report(
+    reporter: ProgressReporter | None,
+    stage: str,
+    message: str,
+    **details: object,
+) -> None:
+    if reporter is not None:
+        await reporter(
+            stage,
+            message,
+            **{key: value for key, value in details.items() if value is not None},
+        )

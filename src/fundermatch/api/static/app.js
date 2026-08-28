@@ -6,6 +6,10 @@ const state = {
   audit: [],
   selectedFunder: "",
   sources: [],
+  intakeJobId: "",
+  intakeLastSequence: 0,
+  intakeStartedAt: 0,
+  intakeLastEventAt: 0,
 };
 
 const elements = {
@@ -35,12 +39,19 @@ const elements = {
   intake: document.querySelector("#intake-dialog"),
   intakeForm: document.querySelector("#intake-form"),
   intakeProgress: document.querySelector("#intake-progress"),
+  intakeActivity: document.querySelector("#intake-activity"),
+  activityStage: document.querySelector("#activity-stage"),
+  activityElapsed: document.querySelector("#activity-elapsed"),
+  activityBar: document.querySelector("#activity-bar"),
+  activityHealth: document.querySelector("#activity-health"),
+  activityEvents: document.querySelector("#activity-events"),
 };
 
 const tokenKeys = {
   reviewer: "fundermatch.reviewerToken",
   pipeline: "fundermatch.pipelineToken",
 };
+const intakeJobKey = "fundermatch.activeIntakeJob";
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -119,6 +130,143 @@ function toast(message) {
   item.textContent = message;
   elements.toastRegion.append(item);
   window.setTimeout(() => item.remove(), 4200);
+}
+
+function resetIntakeActivity() {
+  state.intakeJobId = "";
+  state.intakeLastSequence = 0;
+  state.intakeStartedAt = Date.now();
+  state.intakeLastEventAt = Date.now();
+  elements.intakeActivity.hidden = false;
+  elements.activityStage.textContent = "Uploading borrower documents";
+  elements.activityElapsed.textContent = "0s";
+  elements.activityBar.style.width = "3%";
+  elements.activityHealth.className = "activity-health";
+  elements.activityHealth.textContent = "Creating a durable processing job…";
+  elements.activityEvents.replaceChildren();
+}
+
+function activityProgress(event, status) {
+  if (status === "completed") return 100;
+  if (status === "failed") return 100;
+  const fixed = {
+    upload_received: 5,
+    validating_upload: 7,
+    validating_document: 10,
+    staged_document: 14,
+    submitting_batch: 16,
+    waiting_gpu: 18,
+    gpu_ingestion_ready: 20,
+    parsing_document: 25,
+    chunking_document: 45,
+    embedding_document: 52,
+    indexing_document: 58,
+    releasing_gpu: 63,
+    vllm_ready: 68,
+    extracting_metric: 72,
+    metric_completed: 84,
+    rule_gating: 88,
+    assembling_suggestions: 94,
+    awaiting_human: 98,
+    completed: 100,
+  };
+  let value = fixed[event?.stage] || 5;
+  if (event?.stage === "document_completed" && event.total) {
+    value = 20 + (Number(event.completed) / Number(event.total)) * 42;
+  }
+  if ((event?.stage === "extracting_metric" || event?.stage === "metric_completed") && event.total) {
+    value = 68 + (Number(event.completed) / Number(event.total)) * 16;
+  }
+  return Math.max(3, Math.min(100, value));
+}
+
+function renderActivityEvent(event, status) {
+  const item = document.createElement("li");
+  item.className = `activity-event ${event.stage === "failed" ? "failed" : ""}`;
+  const detail = document.createElement("div");
+  const message = document.createElement("strong");
+  message.textContent = event.message;
+  detail.append(message);
+  if (event.document_name) {
+    const documentMeta = document.createElement("small");
+    documentMeta.textContent = event.document_count
+      ? `Document ${event.document_index}/${event.document_count}: ${event.document_name}`
+      : event.document_name;
+    detail.append(documentMeta);
+  }
+  const agentMeta = [
+    event.worker ? `Worker: ${titleCase(event.worker)}` : "",
+    event.attempt ? `Attempt ${event.attempt}` : "",
+    event.stage === "resume" ? "Resumed from checkpoint" : "",
+    event.guardrail_code ? `Guardrail: ${event.guardrail_code}` : "",
+    event.checkpoint_id ? `Checkpoint ${event.checkpoint_id.slice(0, 10)}` : "",
+  ].filter(Boolean);
+  if (agentMeta.length) {
+    const meta = document.createElement("small");
+    meta.textContent = agentMeta.join(" · ");
+    detail.append(meta);
+  }
+  const time = document.createElement("small");
+  time.textContent = new Date(event.occurred_at).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  item.append(detail, time);
+  elements.activityEvents.append(item);
+  elements.activityEvents.scrollTop = elements.activityEvents.scrollHeight;
+  elements.activityStage.textContent = event.message;
+  elements.activityBar.style.width = `${activityProgress(event, status)}%`;
+  state.intakeLastEventAt = Date.now();
+}
+
+function updateActivityClock() {
+  const elapsed = Math.max(0, Math.floor((Date.now() - state.intakeStartedAt) / 1000));
+  const minutes = Math.floor(elapsed / 60);
+  const seconds = elapsed % 60;
+  elements.activityElapsed.textContent = minutes ? `${minutes}m ${seconds}s` : `${seconds}s`;
+  const quietSeconds = Math.floor((Date.now() - state.intakeLastEventAt) / 1000);
+  elements.activityHealth.classList.toggle("stalled", quietSeconds >= 60);
+  elements.activityHealth.textContent = quietSeconds >= 60
+    ? `No new stage for ${quietSeconds}s. The current OCR/model call may still be running.`
+    : `Live · last update ${quietSeconds}s ago`;
+}
+
+async function followIntakeJob(accepted) {
+  state.intakeJobId = accepted.job_id;
+  sessionStorage.setItem(intakeJobKey, JSON.stringify(accepted));
+  let status = "queued";
+  while (["queued", "running"].includes(status)) {
+    const snapshot = await api(
+      `${accepted.events_url}?after=${state.intakeLastSequence}`,
+      {},
+      "pipeline",
+    );
+    status = snapshot.job.status;
+    snapshot.events.forEach((event) => {
+      state.intakeLastSequence = Math.max(state.intakeLastSequence, event.sequence);
+      renderActivityEvent(event, status);
+    });
+    updateActivityClock();
+    if (["queued", "running"].includes(status)) {
+      await new Promise((resolve) => window.setTimeout(resolve, 900));
+    }
+  }
+  if (status === "failed") {
+    elements.activityBar.style.width = "100%";
+    elements.activityBar.style.background = "var(--red)";
+    throw new Error(
+      snapshotErrorMessage(accepted.application_id),
+    );
+  }
+  elements.activityBar.style.width = "100%";
+  elements.activityHealth.textContent = "Completed · ready for human review";
+  sessionStorage.removeItem(intakeJobKey);
+  return accepted.application_id;
+}
+
+function snapshotErrorMessage(applicationId) {
+  return `Processing stopped for ${applicationId}. The activity timeline shows the last successful stage; retry is safe when marked retryable.`;
 }
 
 async function loadCase(applicationId, { quiet = false } = {}) {
@@ -346,6 +494,16 @@ function decisionForm(candidates, excluded, selected) {
     <select id="selected-funder">${options}</select>
     <label for="decision-reason">Reviewer rationale</label>
     <textarea id="decision-reason" rows="3" maxlength="2000" required placeholder="State why the evidence supports your action"></textarea>
+    <label for="restart-stage">Send-back restart stage</label>
+    <select id="restart-stage">
+      <option value="supervisor">Supervisor auto-route (Gemma)</option>
+      <option value="document_processing">Document processing</option>
+      <option value="financial_analysis">Financial metric extraction</option>
+      <option value="eligibility">Deterministic eligibility</option>
+      <option value="precedent_retrieval">Precedent retrieval</option>
+      <option value="suggestion">Suggestion assembly</option>
+      <option value="guardrails">Guardrail validation</option>
+    </select>
     <div id="override-fields">${overrideFields(selected)}</div>
     <label for="decision-conditions">Conditions, one per line</label>
     <textarea id="decision-conditions" rows="2" placeholder="Required only for approve with conditions"></textarea>
@@ -415,6 +573,9 @@ async function submitDecision(action) {
     reason,
     conditions: action === "approve_with_conditions" ? conditionLines : [],
     overrides: action === "send_back" ? [] : overrides,
+    restart_stage: action === "send_back"
+      ? form.querySelector("#restart-stage").value
+      : null,
   };
   setLoading(true);
   notice("Recording the authoritative human action…");
@@ -542,16 +703,21 @@ elements.intakeForm.addEventListener("submit", async (event) => {
   files.forEach((file) => body.append("files", file));
   const submit = elements.intakeForm.querySelector('[type="submit"]');
   submit.disabled = true;
+  resetIntakeActivity();
+  elements.activityBar.style.background = "var(--teal)";
   elements.intakeProgress.hidden = false;
-  elements.intakeProgress.textContent = "Parsing PDFs, indexing evidence, extracting cited metrics, and evaluating funders. This can take several minutes on first model load.";
+  elements.intakeProgress.className = "dialog-copy";
+  elements.intakeProgress.textContent = "Upload accepted. Keep this dialog open for detailed live processing activity.";
   try {
-    const result = await api("/v1/intake", { method: "POST", body }, "pipeline");
-    state.applicationId = result.workflow.application_id;
+    const accepted = await api("/v1/intake-jobs", { method: "POST", body }, "pipeline");
+    state.applicationId = await followIntakeJob(accepted);
     elements.applicationId.value = state.applicationId;
-    elements.intake.close();
-    elements.intakeForm.reset();
-    toast(`${result.documents.length} document(s) processed; case queued for human review.`);
+    toast("Documents processed; case queued for human review.");
     await loadCase(state.applicationId, { quiet: true });
+    window.setTimeout(() => {
+      elements.intake.close();
+      elements.intakeForm.reset();
+    }, 900);
   } catch (error) {
     elements.intakeProgress.textContent = error.message;
     elements.intakeProgress.className = "dialog-copy intake-error";
@@ -580,3 +746,30 @@ if (initialApplication) {
   elements.applicationId.value = initialApplication;
   if (authToken()) loadCase(initialApplication);
 }
+
+async function resumeActiveIntake() {
+  const raw = sessionStorage.getItem(intakeJobKey);
+  if (!raw || !token("pipeline")) return;
+  let accepted;
+  try {
+    accepted = JSON.parse(raw);
+  } catch {
+    sessionStorage.removeItem(intakeJobKey);
+    return;
+  }
+  resetIntakeActivity();
+  elements.intakeProgress.hidden = false;
+  elements.intakeProgress.textContent = "Reconnected to the durable processing timeline.";
+  if (!elements.intake.open) elements.intake.showModal();
+  try {
+    state.applicationId = await followIntakeJob(accepted);
+    elements.applicationId.value = state.applicationId;
+    toast("Processing completed; case queued for human review.");
+    await loadCase(state.applicationId, { quiet: true });
+  } catch (error) {
+    elements.intakeProgress.textContent = error.message;
+    elements.intakeProgress.className = "dialog-copy intake-error";
+  }
+}
+
+resumeActiveIntake();
