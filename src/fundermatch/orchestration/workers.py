@@ -10,12 +10,13 @@ from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from fundermatch.clients.findociq_client import FinDocIQClient
+from fundermatch.clients.findociq_client import FinDocIQClient, FinDocIQUnavailable
 from fundermatch.clients.findociq_contract import (
     ExtractedFigure,
     ExtractRequest,
     IngestBatchRequest,
     IngestDocumentRequest,
+    ProductionExtractRequest,
 )
 from fundermatch.intake import IntakeDocument, _decimal, _default_unit, _select_figure
 from fundermatch.matching.retriever import RuleGatedPrecedentRetriever
@@ -37,6 +38,7 @@ from fundermatch.precedent.schema import EvidenceMetric, FinancialProfile
 from fundermatch.prompts import load_prompt
 from fundermatch.rules.engine import EligibilityEngine
 from fundermatch.rules.schema import BorrowerApplication, FunderEligibility, FunderPolicy
+from fundermatch.security.pii import redact_sensitive_text
 from fundermatch.suggest.assembler import SuggestionAssembler
 from fundermatch.workflow.errors import WorkflowNotFoundError
 from fundermatch.workflow.schema import (
@@ -116,15 +118,27 @@ class DocumentProcessingWorker(_Worker):
         else:
             request = self.d.workspace.request(state.application_id)
             ingest_documents = []
+            production = bool(getattr(self.d.findociq, "production_enabled", False))
+            policy_hash = getattr(self.d.findociq, "policy_hash", None)
+            if production and not policy_hash:
+                raise WorkerFailure(
+                    "guardrail_policy_unavailable",
+                    "Production guardrail policy identity is not configured",
+                    retryable=False,
+                )
             for staged in request.files:
                 content = self.d.workspace.read_pdf(
                     state.application_id, staged.filename, staged.sha256
                 )
                 ingest_documents.append(
                     IngestDocumentRequest(
+                        contract_version="2.0" if production else "1.0",
                         filename=staged.filename,
                         sha256=staged.sha256,
                         content_base64=b64encode(content).decode("ascii"),
+                        application_id=state.application_id if production else None,
+                        command_id=str(context.command_id) if production else None,
+                        policy_hash=policy_hash if production else None,
                     )
                 )
             await self.d.report(
@@ -132,14 +146,37 @@ class DocumentProcessingWorker(_Worker):
                 "document_processing",
                 attempt=state.attempts.get(self.name, 0) + 1,
             )
-            context.consume_tool_call()
             try:
-                response = await self.d.findociq.ingest_batch(
-                    IngestBatchRequest(
+                response = await context.execute(
+                    "findociq_ingest",
+                    self.d.findociq.ingest_batch(IngestBatchRequest(
+                        contract_version="2.0" if production else "1.0",
                         batch_id=state.job_id or str(context.command_id),
                         documents=tuple(ingest_documents),
-                    )
+                    )),
                 )
+            except FinDocIQUnavailable as error:
+                if error.code == "document_prompt_injection_risk":
+                    raise WorkerFailure(
+                        error.code,
+                        "Document contains instruction-like evidence requiring human attention",
+                        needs_attention=True,
+                    ) from error
+                if error.code in {
+                    "active_pdf_content",
+                    "embedded_file",
+                    "encrypted_pdf",
+                    "malformed_pdf",
+                    "malware_detected",
+                }:
+                    raise WorkerFailure(
+                        error.code,
+                        "Document was blocked by the production input policy",
+                        retryable=False,
+                    ) from error
+                raise WorkerFailure(
+                    "findociq_ingest_unavailable", "FinDocIQ ingestion is temporarily unavailable"
+                ) from error
             except Exception as error:
                 raise WorkerFailure(
                     "findociq_ingest_unavailable", "FinDocIQ ingestion is temporarily unavailable"
@@ -149,6 +186,21 @@ class DocumentProcessingWorker(_Worker):
                 raise WorkerFailure(
                     "ingest_receipt_mismatch",
                     "FinDocIQ ingestion receipt did not match staged documents",
+                    retryable=False,
+                )
+            if production and any(
+                item.application_id != state.application_id
+                or item.policy_hash != policy_hash
+                or item.scan_status != "clean"
+                or not item.scan_receipt_sha256
+                or not item.dlp_receipt_sha256
+                or not item.storage_receipt_sha256
+                or not item.ownership_receipt_sha256
+                for item in response.documents
+            ):
+                raise WorkerFailure(
+                    "production_ingest_receipt_invalid",
+                    "FinDocIQ did not return verified production security receipts",
                     retryable=False,
                 )
             artifact = DocumentArtifact(
@@ -207,15 +259,24 @@ class FinancialMetricExtractionWorker(_Worker):
                     state.application_id, artifact_name, MetricArtifact
                 )
             else:
-                context.consume_tool_call()
                 await self.d.report(state.application_id, "extracting_metric", metric=metric)
                 try:
-                    response = await self.d.findociq.extract(
-                        ExtractRequest(
+                    extraction_request = (
+                        ProductionExtractRequest(
+                            application_id=state.application_id,
+                            document_ids=document_ids,
+                            metric_ids=(metric,),
+                            command_id=f"{context.command_id}:{metric}",
+                        )
+                        if bool(getattr(self.d.findociq, "production_enabled", False))
+                        else ExtractRequest(
                             question=load_prompt(f"extract_{metric}"),
                             question_id=f"{state.application_id}:{metric}",
                             document_ids=document_ids,
                         )
+                    )
+                    response = await context.execute(
+                        "findociq_extract", self.d.findociq.extract(extraction_request)
                     )
                 except Exception as error:
                     raise WorkerFailure(
@@ -225,6 +286,16 @@ class FinancialMetricExtractionWorker(_Worker):
                 metric_artifact = MetricArtifact(
                     metric=metric, figure=_select_figure(response.figures, metric)
                 )
+                if bool(getattr(self.d.findociq, "production_enabled", False)) and (
+                    response.application_id != state.application_id
+                    or response.command_id != f"{context.command_id}:{metric}"
+                    or response.policy_hash != getattr(self.d.findociq, "policy_hash", None)
+                ):
+                    raise WorkerFailure(
+                        "production_extract_receipt_invalid",
+                        "FinDocIQ extraction receipt did not match the application",
+                        retryable=False,
+                    )
                 self.d.workspace.save(state.application_id, artifact_name, metric_artifact)
             figure = metric_artifact.figure
             if figure.citation.document_id not in document_ids:
@@ -309,7 +380,6 @@ class EligiblePrecedentRetrievalWorker(_Worker):
     name = WorkerName.PRECEDENT_RETRIEVAL
 
     async def run(self, state: ApplicationMemoryState, context: WorkerContext) -> WorkerResult:
-        context.consume_tool_call()
         application = self.d.workspace.load(
             state.application_id, WorkerName.FINANCIAL_ANALYSIS.value, BorrowerApplication
         )
@@ -317,8 +387,9 @@ class EligiblePrecedentRetrievalWorker(_Worker):
             state.application_id, WorkerName.ELIGIBILITY.value, EligibilityArtifact
         )
         try:
-            retrieval = await asyncio.to_thread(
-                self.d.retriever.retrieve, application, self.d.policies
+            retrieval = await context.execute(
+                "qdrant_search",
+                asyncio.to_thread(self.d.retriever.retrieve, application, self.d.policies),
             )
         except RuntimeError as error:
             raise WorkerFailure(
@@ -350,14 +421,35 @@ class AdvisorySuggestionWorker(_Worker):
         retrieval = self.d.workspace.load(
             state.application_id, WorkerName.PRECEDENT_RETRIEVAL.value, RuleGatedRetrievalResult
         )
-        suggestion = SuggestionAssembler().assemble(application, self.d.policies, retrieval)
+        suggestion = SuggestionAssembler(
+            policy_hash=getattr(self.d.findociq, "policy_hash", None)
+        ).assemble(application, self.d.policies, retrieval)
         digest = self.d.workspace.save(state.application_id, self.name.value, suggestion)
+        persisted_suggestion = suggestion
+        if bool(getattr(self.d.findociq, "production_enabled", False)):
+            safe_application = suggestion.application.model_copy(
+                update={
+                    "borrower_name": (
+                        "Application "
+                        f"{sha256(state.application_id.encode()).hexdigest()[:12]}"
+                    ),
+                    "finance_context": redact_sensitive_text(
+                        suggestion.application.finance_context
+                    ),
+                    "operations_context": redact_sensitive_text(
+                        suggestion.application.operations_context
+                    ),
+                }
+            )
+            persisted_suggestion = suggestion.model_copy(
+                update={"application": safe_application}
+            )
         workflow = await _advance(
             self.d,
             state.application_id,
             WorkflowState.AI_SUGGESTED,
             context,
-            suggestion=suggestion.model_dump(mode="json"),
+            suggestion=persisted_suggestion.model_dump(mode="json"),
         )
         return WorkerResult(
             worker=self.name,

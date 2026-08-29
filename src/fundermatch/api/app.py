@@ -1,12 +1,14 @@
 """Thin async HTTP endpoints and the same-origin Phase 6 review console."""
 
 import asyncio
+import json
 import os
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from hashlib import sha256
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import asyncpg
@@ -26,6 +28,7 @@ from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from fundermatch.api.auth import JwtAuthenticator, TokenAuthenticator
 from fundermatch.clients.findociq_client import (
@@ -73,9 +76,14 @@ from fundermatch.orchestration.supervisor import (
 from fundermatch.orchestration.workers import WorkerDependencies, fixed_workers
 from fundermatch.orchestration.workspace import ApplicationWorkspace
 from fundermatch.precedent.embedder import BgeM3Config, BgeM3Embedder
+from fundermatch.precedent.schema import PrecedentStatus
 from fundermatch.precedent.store import QdrantPrecedentConfig, QdrantPrecedentStore
 from fundermatch.precedent.writeback import PrecedentWritebackService, WritebackResult
 from fundermatch.rules.config import load_policies
+from fundermatch.security.policy import ProductionGuardrailPolicy
+from fundermatch.security.rate_limit import PostgresRateLimiter
+from fundermatch.security.receipts import ReceiptSigner
+from fundermatch.security.secrets import read_secret
 from fundermatch.workflow.errors import (
     InvalidTransitionError,
     WorkflowAuthorizationError,
@@ -111,6 +119,43 @@ class CreateWorkflowRequest(BaseModel):
     reason: str = Field(default="Application entered intake", min_length=1, max_length=2000)
 
 
+class SensitiveRevealRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    command_id: UUID = Field(default_factory=uuid4)
+    expected_version: int = Field(ge=0)
+    field_name: str = Field(pattern=r"^(borrower_name|finance_context|operations_context)$")
+    reason: str = Field(min_length=10, max_length=1000)
+
+
+class SensitiveRevealResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    application_id: str
+    field_name: str
+    value: str
+    expires_in_seconds: int = 300
+
+
+class PrecedentLifecycleRequest(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    command_id: UUID = Field(default_factory=uuid4)
+    expected_status: Literal["active", "revoked", "superseded"] = "active"
+    status: Literal["revoked", "superseded"]
+    replacement_case_id: str | None = Field(default=None, min_length=3, max_length=200)
+    reason: str = Field(min_length=10, max_length=1000)
+
+
+class PrecedentLifecycleResponse(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    case_id: str
+    status: PrecedentStatus
+    command_id: UUID
+    policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class AuditResponse(BaseModel):
     events: tuple[AuditEvent, ...]
 
@@ -137,13 +182,27 @@ def create_app(
         if injected:
             yield
             return
-        dsn = os.environ["FUNDERMATCH_DATABASE_URL"]
+        dsn = read_secret("FUNDERMATCH_DATABASE_URL")
         pool = await asyncpg.create_pool(dsn, min_size=1, max_size=10)
         app.state.database_pool = pool
         app.state.intake_job_store = PostgresIntakeJobStore(pool)
         await app.state.intake_job_store.fail_interrupted()
         workflow_service = WorkflowService(PostgresWorkflowRepository(pool))
         app.state.workflow_service = workflow_service
+        production_guardrails = _production_guardrails_enabled()
+        if production_guardrails and not _agent_orchestration_enabled():
+            raise RuntimeError(
+                "production guardrails require the checkpointed agent orchestration path"
+            )
+        guardrail_policy = (
+            ProductionGuardrailPolicy.from_yaml(
+                os.getenv(
+                    "FUNDERMATCH_GUARDRAIL_POLICY", "configs/guardrails/production.yaml"
+                )
+            )
+            if production_guardrails
+            else None
+        )
         snapshot = os.getenv("FUNDERMATCH_BGE_SNAPSHOT_DIR")
         app.state.writeback_service = PrecedentWritebackService(
             workflow=workflow_service,
@@ -154,15 +213,36 @@ def create_app(
                 )
             ),
             embedder=BgeM3Embedder(BgeM3Config(snapshot_dir=Path(snapshot) if snapshot else None)),
+            policy_hash=(guardrail_policy.policy_hash if guardrail_policy else None),
+            validity_days=(
+                guardrail_policy.precedent.default_validity_days
+                if guardrail_policy
+                else None
+            ),
+            outbox_pool=pool,
         )
         intake_root = os.getenv("FUNDERMATCH_INTAKE_DIR")
         ingest_token = os.getenv("FINDOCIQ_INGEST_TOKEN")
-        if intake_root and ingest_token:
+        if intake_root and (ingest_token or production_guardrails):
+            receipt_signer = (
+                ReceiptSigner(_read_secret("FUNDERMATCH_RECEIPT_SIGNING_SECRET"))
+                if production_guardrails
+                else None
+            )
             findociq = FinDocIQClient(
                 FinDocIQClientConfig(
                     base_url=os.getenv("FINDOCIQ_BASE_URL", "http://127.0.0.1:8989"),
                     timeout_seconds=7200,
                     ingest_token=ingest_token,
+                    production_guardrails_enabled=production_guardrails,
+                    service_jwt_secret=(
+                        _read_secret("FINDOCIQ_SERVICE_JWT_SECRET")
+                        if production_guardrails
+                        else None
+                    ),
+                    guardrail_policy_hash=(
+                        guardrail_policy.policy_hash if guardrail_policy else None
+                    ),
                 )
             )
             app.state.findociq_client = findociq
@@ -173,7 +253,8 @@ def create_app(
                 client=app.state.writeback_service.store.client,
                 embedder=app.state.writeback_service.embedder,
                 config=RetrievalConfig(
-                    collection=app.state.writeback_service.store.config.collection
+                    collection=app.state.writeback_service.store.config.collection,
+                    require_active_lifecycle=production_guardrails,
                 ),
             )
             app.state.intake_service = BorrowerIntakeService(
@@ -187,7 +268,17 @@ def create_app(
                 checkpoint_context = open_checkpointer(dsn)
                 checkpointer = await checkpoint_context.__aenter__()
                 app.state.agent_checkpoint_context = checkpoint_context
-                workspace = ApplicationWorkspace(Path(intake_root))
+                workspace = ApplicationWorkspace(
+                    Path(intake_root),
+                    master_key=(
+                        b64decode(
+                            _read_secret("FUNDERMATCH_DOCUMENT_MASTER_KEY"), validate=True
+                        )
+                        if production_guardrails
+                        else None
+                    ),
+                    key_version=os.getenv("FUNDERMATCH_DOCUMENT_KEY_VERSION", "v1"),
+                )
                 activity = AgentActivityBridge(app.state.intake_job_store)
                 dependencies = WorkerDependencies(
                     workspace=workspace,
@@ -211,12 +302,29 @@ def create_app(
                                 app.state.writeback_service.store.client,
                                 app.state.writeback_service.store.config.collection,
                             ),
+                            policy_hash=(
+                                guardrail_policy.policy_hash if guardrail_policy else None
+                            ),
+                            receipt_signer=receipt_signer,
+                            execution_policies=(
+                                guardrail_policy.workers if guardrail_policy else None
+                            ),
                         ),
                     ),
                     checkpointer=checkpointer,
                     lifecycle=PostgresLifecycleStore(pool),
                     recorder=_agent_recorder(Path(intake_root)),
                     activity=activity,
+                    execution_policies=(guardrail_policy.workers if guardrail_policy else None),
+                    policy_hash=(guardrail_policy.policy_hash if guardrail_policy else None),
+                    receipt_signer=receipt_signer,
+                    retention_cleanup=lambda application_id: _retention_cleanup(
+                        pool,
+                        findociq,
+                        workspace,
+                        guardrail_policy.policy_hash if guardrail_policy else "",
+                        application_id,
+                    ),
                 )
                 app.state.agent_runtime = AgentIntakeRuntime(
                     graph=graph,
@@ -254,6 +362,13 @@ def create_app(
             await pool.close()
 
     app = FastAPI(title="FunderMatch HITL API", version="0.8.0", lifespan=lifespan)
+    if _production_guardrails_enabled():
+        allowed_hosts = [
+            item.strip()
+            for item in os.getenv("FUNDERMATCH_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+            if item.strip()
+        ]
+        app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
     static_dir = Path(__file__).with_name("static")
     app.mount("/assets", StaticFiles(directory=static_dir), name="review-assets")
     if repository is not None:
@@ -267,10 +382,61 @@ def create_app(
     app.state.intake_job_store = intake_job_store or InMemoryIntakeJobStore()
     app.state.intake_tasks = set()
     app.state.authenticator = authenticator or JwtAuthenticator(
-        secret=os.environ["FUNDERMATCH_JWT_SECRET"],
+        secret=_read_secret("FUNDERMATCH_JWT_SECRET"),
         issuer=os.getenv("FUNDERMATCH_JWT_ISSUER", "fundermatch"),
         audience=os.getenv("FUNDERMATCH_JWT_AUDIENCE", "fundermatch-api"),
     )
+
+    @app.middleware("http")
+    async def production_security(request: Request, call_next):  # type: ignore[no-untyped-def]
+        correlation_id = request.headers.get("X-Correlation-ID") or uuid4().hex
+        concurrency_lease_id = uuid4().hex
+        concurrency_limiter: PostgresRateLimiter | None = None
+        concurrency_acquired = False
+        if _production_guardrails_enabled():
+            pool = getattr(request.app.state, "database_pool", None)
+            category = _rate_category(request.method, request.url.path)
+            if pool is not None and category is not None:
+                policy = ProductionGuardrailPolicy.from_yaml(
+                    os.getenv(
+                        "FUNDERMATCH_GUARDRAIL_POLICY",
+                        "configs/guardrails/production.yaml",
+                    )
+                )
+                authorization = request.headers.get("Authorization", "anonymous")
+                subject = sha256(authorization.encode()).hexdigest()
+                concurrency_limiter = PostgresRateLimiter(pool)
+                if not await concurrency_limiter.allow(
+                    subject, category, policy.api_limits[category]
+                ):
+                    return _http_exception_response(
+                        status.HTTP_429_TOO_MANY_REQUESTS,
+                        "request rate limit exceeded",
+                        headers={"Retry-After": str(policy.api_limits[category].window_seconds)},
+                    )
+                concurrency_acquired = await concurrency_limiter.acquire_concurrency(
+                    subject,
+                    category,
+                    concurrency_lease_id,
+                    policy.api_limits[category],
+                )
+                if not concurrency_acquired:
+                    return _http_exception_response(
+                        status.HTTP_429_TOO_MANY_REQUESTS,
+                        "request concurrency limit exceeded",
+                        headers={"Retry-After": "5"},
+                    )
+        try:
+            response = await call_next(request)
+        finally:
+            if concurrency_limiter is not None and concurrency_acquired:
+                await concurrency_limiter.release_concurrency(concurrency_lease_id)
+        response.headers["X-Correlation-ID"] = correlation_id
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     def actor_from_token(
         credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
@@ -628,7 +794,118 @@ def create_app(
         workflow_service: Annotated[WorkflowService, Depends(service)],
     ) -> WorkflowRecord:
         _require_reader(actor)
-        return await workflow_service.get(application_id)
+        record = await workflow_service.get(application_id)
+        return _mask_workflow(record) if _production_guardrails_enabled() else record
+
+    @app.post(
+        "/v1/applications/{application_id}/reveal",
+        response_model=SensitiveRevealResponse,
+    )
+    async def reveal_sensitive_field(
+        request: Request,
+        application_id: str,
+        payload: SensitiveRevealRequest,
+        actor: Annotated[ActorClaims, Depends(actor_from_token)],
+        workflow_service: Annotated[WorkflowService, Depends(service)],
+    ) -> SensitiveRevealResponse:
+        if ActorRole.HUMAN_REVIEWER not in actor.roles:
+            raise WorkflowAuthorizationError("human reviewer role required")
+        record = await workflow_service.get(application_id)
+        if record.version != payload.expected_version:
+            raise WorkflowConflictError("reveal request used a stale workflow version")
+        runtime = getattr(request.app.state, "agent_runtime", None)
+        if runtime is None:
+            raise HTTPException(503, "application workspace is not configured")
+        intake_request = runtime.workspace.request(application_id)
+        value = str(getattr(intake_request.metadata, payload.field_name))
+        pool = getattr(request.app.state, "database_pool", None)
+        if pool is None:
+            raise HTTPException(503, "reveal audit storage is unavailable")
+        await pool.execute(
+            """
+            INSERT INTO sensitive_reveal_audit
+                (command_id, application_id, actor_id, field_name, reason)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (command_id) DO NOTHING
+            """,
+            payload.command_id,
+            application_id,
+            actor.actor_id,
+            payload.field_name,
+            payload.reason,
+        )
+        return SensitiveRevealResponse(
+            application_id=application_id,
+            field_name=payload.field_name,
+            value=value,
+        )
+
+    @app.post(
+        "/v1/precedents/{case_id}/lifecycle",
+        response_model=PrecedentLifecycleResponse,
+    )
+    async def change_precedent_lifecycle(
+        request: Request,
+        case_id: str,
+        payload: PrecedentLifecycleRequest,
+        actor: Annotated[ActorClaims, Depends(actor_from_token)],
+        precedent_service: Annotated[PrecedentWritebackService, Depends(writeback)],
+    ) -> PrecedentLifecycleResponse:
+        if ActorRole.HUMAN_REVIEWER not in actor.roles:
+            raise WorkflowAuthorizationError("human reviewer role required")
+        if payload.status == "superseded" and not payload.replacement_case_id:
+            raise InvalidTransitionError("superseded precedent requires replacement_case_id")
+        pool = getattr(request.app.state, "database_pool", None)
+        if pool is None:
+            raise HTTPException(503, "precedent lifecycle audit storage is unavailable")
+        existing = await pool.fetchrow(
+            "SELECT case_id, status, policy_hash FROM precedent_lifecycle WHERE command_id = $1",
+            payload.command_id,
+        )
+        if existing is not None:
+            return PrecedentLifecycleResponse(
+                case_id=existing["case_id"],
+                status=PrecedentStatus(existing["status"]),
+                command_id=payload.command_id,
+                policy_hash=existing["policy_hash"],
+            )
+        policy = ProductionGuardrailPolicy.from_yaml(
+            os.getenv("FUNDERMATCH_GUARDRAIL_POLICY", "configs/guardrails/production.yaml")
+        )
+        try:
+            changed = await asyncio.to_thread(
+                precedent_service.store.set_lifecycle,
+                case_id,
+                expected_status=PrecedentStatus(payload.expected_status),
+                status=PrecedentStatus(payload.status),
+            )
+        except KeyError as error:
+            raise HTTPException(404, "precedent not found") from error
+        except ValueError as error:
+            raise WorkflowConflictError(str(error)) from error
+        await pool.execute(
+            """
+            INSERT INTO precedent_lifecycle
+                (case_id, status, policy_hash, valid_until, supersedes_case_id,
+                 command_id, reason, actor_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            ON CONFLICT (command_id) DO NOTHING
+            """,
+            case_id,
+            changed.lifecycle_status.value,
+            policy.policy_hash,
+            changed.valid_until,
+            payload.replacement_case_id,
+            payload.command_id,
+            payload.reason,
+            actor.actor_id,
+        )
+        return PrecedentLifecycleResponse(
+            case_id=case_id,
+            status=changed.lifecycle_status,
+            command_id=payload.command_id,
+            policy_hash=policy.policy_hash,
+        )
 
     @app.get("/v1/workflows/{application_id}/audit", response_model=AuditResponse)
     async def get_audit(
@@ -795,11 +1072,23 @@ def _agent_orchestration_enabled() -> bool:
     }
 
 
+def _production_guardrails_enabled() -> bool:
+    return os.getenv("FUNDERMATCH_PRODUCTION_GUARDRAILS_ENABLED", "false").casefold() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+
+def _read_secret(name: str) -> str:
+    return read_secret(name)
+
+
 def _agent_recorder(intake_root: Path) -> CompositeAgentSpanRecorder:
     recorders = [JsonlAgentSpanRecorder(intake_root / "operations" / "agent-spans.jsonl")]
     endpoint = os.getenv("FUNDERMATCH_LANGFUSE_OTLP_ENDPOINT")
-    public_key = os.getenv("LANGFUSE_PUBLIC_KEY")
-    secret_key = os.getenv("LANGFUSE_SECRET_KEY")
+    public_key = _optional_secret("LANGFUSE_PUBLIC_KEY")
+    secret_key = _optional_secret("LANGFUSE_SECRET_KEY")
     if endpoint and public_key and secret_key:
         credentials = b64encode(f"{public_key}:{secret_key}".encode()).decode()
         with suppress(RuntimeError):
@@ -812,6 +1101,13 @@ def _agent_recorder(intake_root: Path) -> CompositeAgentSpanRecorder:
     return CompositeAgentSpanRecorder(*recorders)
 
 
+def _optional_secret(name: str) -> str | None:
+    try:
+        return read_secret(name)
+    except RuntimeError:
+        return None
+
+
 async def _agent_maintenance_loop(graph: ApplicationMemoryGraph) -> None:
     from fundermatch.orchestration.maintenance import AgentMaintenance
 
@@ -820,6 +1116,88 @@ async def _agent_maintenance_loop(graph: ApplicationMemoryGraph) -> None:
     while True:
         await maintenance.run_once()
         await asyncio.sleep(interval)
+
+
+async def _retention_cleanup(
+    pool: asyncpg.Pool,
+    findociq: FinDocIQClient,
+    workspace: ApplicationWorkspace,
+    policy_hash: str,
+    application_id: str,
+) -> None:
+    """Run one idempotent application deletion through the transactional outbox."""
+
+    command_id = uuid5(
+        NAMESPACE_URL, f"fundermatch:{application_id}:retention-delete:{policy_hash}"
+    )
+    payload_hash = sha256(f"{application_id}|{policy_hash}".encode()).hexdigest()
+    async with pool.acquire() as connection:
+        row = await connection.fetchrow(
+            """
+            INSERT INTO guardrail_outbox
+                (command_id, application_id, operation, payload_hash, status)
+            VALUES ($1, $2, 'retention_delete', $3, 'pending')
+            ON CONFLICT (command_id) DO UPDATE
+                SET updated_at = guardrail_outbox.updated_at
+            RETURNING status, receipt, application_id, operation, payload_hash
+            """,
+            command_id,
+            application_id,
+            payload_hash,
+        )
+    if (
+        row["application_id"] != application_id
+        or row["operation"] != "retention_delete"
+        or row["payload_hash"] != payload_hash
+    ):
+        raise RuntimeError("retention command identity conflict")
+    if row["status"] == "completed":
+        await asyncio.to_thread(workspace.delete_application, application_id)
+        return
+    try:
+        receipt = await findociq.retention_delete(application_id, str(command_id))
+        await asyncio.to_thread(workspace.delete_application, application_id)
+    except Exception:
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """
+                UPDATE guardrail_outbox
+                SET status = 'failed', attempts = attempts + 1,
+                    last_error_code = 'retention_dependency_failed', updated_at = now()
+                WHERE command_id = $1
+                """,
+                command_id,
+            )
+        raise
+    receipt_payload = receipt.model_dump(mode="json")
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.execute(
+            """
+            UPDATE guardrail_outbox
+            SET status = 'completed', attempts = attempts + 1,
+                receipt = $2::jsonb, last_error_code = NULL, updated_at = now()
+            WHERE command_id = $1
+            """,
+            command_id,
+            json.dumps(receipt_payload, sort_keys=True),
+        )
+        await connection.execute(
+            """
+            INSERT INTO retention_tombstones
+                (application_id, policy_hash, artifact_hashes)
+            VALUES ($1, $2, $3::jsonb)
+            ON CONFLICT (application_id) DO NOTHING
+            """,
+            application_id,
+            policy_hash,
+            json.dumps(
+                {
+                    "findociq_receipt": receipt.receipt_sha256,
+                    "payload": payload_hash,
+                },
+                sort_keys=True,
+            ),
+        )
 
 
 async def _finalize_human_decision(
@@ -904,7 +1282,35 @@ async def _http_dependency_health(url: str | None, *, warning: bool = False) -> 
     return "healthy"
 
 
-def _http_exception_response(status_code: int, detail: str):
+def _rate_category(method: str, path: str) -> str | None:
+    if path in {"/health", "/ready", "/"} or path.startswith("/assets/"):
+        return None
+    if path == "/v1/intake-jobs" and method == "POST":
+        return "upload"
+    if path.endswith("/resume"):
+        return "resume"
+    if path.endswith("/decision"):
+        return "review"
+    if "/reveal" in path:
+        return "reveal"
+    return "read"
+
+
+def _mask_workflow(record: WorkflowRecord) -> WorkflowRecord:
+    if record.suggestion is None:
+        return record
+    suggestion = dict(record.suggestion)
+    application = dict(suggestion.get("application", {}))
+    for field in ("borrower_name", "finance_context", "operations_context"):
+        if application.get(field):
+            application[field] = "[MASKED]"
+    suggestion["application"] = application
+    return record.model_copy(update={"suggestion": suggestion})
+
+
+def _http_exception_response(
+    status_code: int, detail: str, headers: dict[str, str] | None = None
+):
     from fastapi.responses import JSONResponse
 
-    return JSONResponse(status_code=status_code, content={"detail": detail})
+    return JSONResponse(status_code=status_code, content={"detail": detail}, headers=headers)

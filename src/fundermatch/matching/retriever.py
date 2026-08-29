@@ -28,6 +28,7 @@ class RetrievalConfig(BaseModel):
     profile_weight: float = Field(default=0.75, ge=0, le=1)
     comments_weight: float = Field(default=0.25, ge=0, le=1)
     min_score: float = Field(default=0.45, ge=-1, le=1)
+    require_active_lifecycle: bool = False
 
     @model_validator(mode="after")
     def validate_weights(self) -> RetrievalConfig:
@@ -78,14 +79,19 @@ class RuleGatedPrecedentRetriever:
         profile_vector, comments_vector = self.embedder.embed_texts(
             [application.profile_text(), application.context_text()]
         )
-        funder_filter = models.Filter(
-            must=[
+        conditions = [
                 models.FieldCondition(
                     key="decision.funder_id",
                     match=models.MatchAny(any=list(eligible_funders)),
                 )
-            ]
-        )
+        ]
+        if self.config.require_active_lifecycle:
+            conditions.append(
+                models.FieldCondition(
+                    key="lifecycle_status", match=models.MatchValue(value="active")
+                )
+            )
+        funder_filter = models.Filter(must=conditions)
         profile_hits = self.client.query_points(
             collection_name=self.config.collection,
             query=profile_vector,
@@ -125,6 +131,8 @@ class RuleGatedPrecedentRetriever:
                 + self.config.comments_weight * (item.comments or 0.0)
             )
             precedent = DecidedLoanCase.model_validate(item.payload)
+            if self.config.require_active_lifecycle and not precedent.is_retrievable():
+                continue
             if precedent.decision.funder_id not in eligible_funders:
                 raise RuntimeError("Qdrant returned an ineligible funder precedent")
             if combined >= self.config.min_score:

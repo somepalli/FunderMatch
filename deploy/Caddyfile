@@ -1,0 +1,16 @@
+{
+    auto_https disable_redirects
+}
+
+:443 {
+    tls internal
+    request_body {
+        max_size 550MB
+    }
+    reverse_proxy fundermatch:8977
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+    }
+}

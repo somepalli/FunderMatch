@@ -134,7 +134,15 @@ class WorkerReceipt(BaseModel):
     worker: WorkerName
     command_id: UUID
     output_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    attempt: int = Field(default=1, ge=1)
+    tool_calls: tuple[str, ...] = Field(default=(), max_length=20)
+    latency_ms: float = Field(default=0, ge=0)
+    policy_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    signature: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     completed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    def signed_payload(self) -> dict[str, object]:
+        return self.model_dump(mode="json", exclude={"signature", "completed_at"})
 
 
 class WorkerError(BaseModel):

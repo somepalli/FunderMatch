@@ -8,7 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from qdrant_client import QdrantClient, models
 
-from fundermatch.precedent.schema import DecidedLoanCase
+from fundermatch.precedent.schema import DecidedLoanCase, PrecedentStatus
 
 PROFILE_VECTOR = "profile_vec"
 COMMENTS_VECTOR = "comments_vec"
@@ -85,6 +85,46 @@ class QdrantPrecedentStore:
         if stored != case:
             raise RuntimeError(f"Qdrant payload verification failed for {case.case_id!r}")
         return stored
+
+    def set_lifecycle(
+        self,
+        case_id: str,
+        *,
+        expected_status: PrecedentStatus,
+        status: PrecedentStatus,
+    ) -> DecidedLoanCase:
+        point_id = self.point_id(case_id)
+        records = self.client.retrieve(
+            collection_name=self.config.collection,
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if len(records) != 1 or records[0].payload is None:
+            raise KeyError(f"precedent {case_id!r} not found")
+        current = DecidedLoanCase.model_validate(records[0].payload)
+        if current.lifecycle_status is status:
+            return current
+        if current.lifecycle_status is not expected_status:
+            raise ValueError("precedent lifecycle changed since it was reviewed")
+        self.client.set_payload(
+            collection_name=self.config.collection,
+            payload={"lifecycle_status": status.value},
+            points=[point_id],
+            wait=True,
+        )
+        records = self.client.retrieve(
+            collection_name=self.config.collection,
+            ids=[point_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        if len(records) != 1 or records[0].payload is None:
+            raise RuntimeError("Qdrant did not verify precedent lifecycle update")
+        changed = DecidedLoanCase.model_validate(records[0].payload)
+        if changed.lifecycle_status is not status:
+            raise RuntimeError("Qdrant lifecycle verification failed")
+        return changed
 
     @staticmethod
     def point_id(case_id: str) -> str:

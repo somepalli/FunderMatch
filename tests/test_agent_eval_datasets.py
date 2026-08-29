@@ -4,7 +4,11 @@ import json
 from collections import Counter
 from pathlib import Path
 
-from fundermatch.evals.schema import AgentReleaseCase, SendBackRoutingCase
+from fundermatch.evals.schema import (
+    AgentReleaseCase,
+    ProductionSecurityCase,
+    SendBackRoutingCase,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -47,3 +51,16 @@ def test_sendback_dataset_forces_all_ambiguous_routes_to_stop_safely() -> None:
     assert ambiguous
     assert all(item.expected_stage is None for item in ambiguous)
     assert all(item.expected_stop_state.value == "needs_attention" for item in ambiguous)
+
+
+def test_production_security_dataset_has_one_typed_case_per_attack() -> None:
+    rows = [
+        ProductionSecurityCase.model_validate(item)
+        for item in _jsonl(
+            ROOT / "evals" / "datasets" / "production_security_cases.jsonl"
+        )
+    ]
+    assert len(rows) == 8
+    assert len({item.case_id for item in rows}) == len(rows)
+    assert len({item.attack for item in rows}) == len(rows)
+    assert all(item.forbidden_outcomes for item in rows)

@@ -18,6 +18,7 @@ dependencies = [
   "pydantic==2.10.3",
   "psycopg[binary,pool]==3.3.4",
   "PyJWT==2.10.1",
+  "cryptography==46.0.3",
   "PyYAML==6.0.3",
   "python-multipart==0.0.20",
   "qdrant-client==1.18.0",
@@ -45,6 +46,8 @@ fundermatch-workflow-smoke = "fundermatch.workflow.smoke:main"
 fundermatch-writeback-smoke = "fundermatch.precedent.writeback_cli:main"
 fundermatch-demo-review = "fundermatch.workflow.demo:main"
 fundermatch-migrate-memory = "fundermatch.orchestration.postgres:main"
+fundermatch-rotate-workspace-keys = "fundermatch.security.rotate_keys:main"
+fundermatch-release-eval = "fundermatch.evals.release_runner:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fundermatch"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from hashlib import sha256
 
 from fundermatch.matching.schema import PrecedentMatch, RuleGatedRetrievalResult
 from fundermatch.precedent.schema import DecidedLoanCase
@@ -11,6 +12,7 @@ from fundermatch.suggest.schema import (
     AdvisoryCandidate,
     ExcludedFunder,
     ExplainedPrecedent,
+    GroundedClaim,
     SimilarityFactor,
     SuggestionBundle,
 )
@@ -23,6 +25,9 @@ ADVISORY_NOTICE = (
 
 
 class SuggestionAssembler:
+    def __init__(self, policy_hash: str | None = None) -> None:
+        self.policy_hash = policy_hash
+
     def assemble(
         self,
         application: BorrowerApplication,
@@ -93,7 +98,60 @@ class SuggestionAssembler:
             application=application,
             candidates=tuple(candidates),
             excluded_funders=tuple(excluded),
+            claims=self._claims(application, retrieval),
         )
+
+    def _claims(
+        self, application: BorrowerApplication, retrieval: RuleGatedRetrievalResult
+    ) -> tuple[GroundedClaim, ...]:
+        claims = []
+        for evidence in application.evidence:
+            text = f"{evidence.name}={evidence.value} {evidence.unit} ({evidence.period})"
+            claims.append(
+                GroundedClaim(
+                    claim_id=sha256(
+                        f"{application.application_id}|evidence|{text}".encode()
+                    ).hexdigest(),
+                    application_id=application.application_id,
+                    claim_type="evidence",
+                    text=text,
+                    citation=evidence.citation,
+                    policy_hash=self.policy_hash,
+                )
+            )
+        for eligibility in retrieval.eligibility:
+            for check in eligibility.checks:
+                text = (
+                    f"{eligibility.funder_id}:{check.criterion.value}:"
+                    f"actual={check.actual};required={check.requirement};passed={check.passed}"
+                )
+                claims.append(
+                    GroundedClaim(
+                        claim_id=sha256(
+                            f"{application.application_id}|calculation|{text}".encode()
+                        ).hexdigest(),
+                        application_id=application.application_id,
+                        claim_type="calculation",
+                        text=text,
+                        calculation_sha256=sha256(text.encode()).hexdigest(),
+                        policy_hash=self.policy_hash,
+                    )
+                )
+        for match in retrieval.matches:
+            text = f"precedent={match.precedent.case_id};score={match.score:.8f}"
+            claims.append(
+                GroundedClaim(
+                    claim_id=sha256(
+                        f"{application.application_id}|precedent|{text}".encode()
+                    ).hexdigest(),
+                    application_id=application.application_id,
+                    claim_type="precedent",
+                    text=text,
+                    precedent_id=match.precedent.case_id,
+                    policy_hash=self.policy_hash,
+                )
+            )
+        return tuple(claims)
 
     @staticmethod
     def _explain(

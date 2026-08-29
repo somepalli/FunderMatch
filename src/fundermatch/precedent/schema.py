@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
@@ -16,6 +16,12 @@ class DecisionOutcome(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     APPROVED_WITH_CONDITIONS = "approved_with_conditions"
+
+
+class PrecedentStatus(StrEnum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+    SUPERSEDED = "superseded"
 
 
 class FinancialProfile(BaseModel):
@@ -101,6 +107,10 @@ class DecidedLoanCase(BaseModel):
     evidence: tuple[EvidenceMetric, ...] = Field(min_length=3, max_length=3)
     comments: tuple[ReviewerComment, ...] = Field(min_length=2)
     decision: HumanDecision
+    lifecycle_status: PrecedentStatus = PrecedentStatus.ACTIVE
+    policy_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    valid_until: datetime | None = None
+    supersedes_case_id: str | None = None
 
     @model_validator(mode="after")
     def validate_internal_consistency(self) -> DecidedLoanCase:
@@ -115,7 +125,15 @@ class DecidedLoanCase(BaseModel):
         teams = {comment.team for comment in self.comments}
         if teams != {"finance", "operations"}:
             raise ValueError("each precedent requires finance and operations comments")
+        if self.valid_until is not None and self.valid_until <= self.decision.decided_at:
+            raise ValueError("precedent validity must extend beyond its human decision")
         return self
+
+    def is_retrievable(self, now: datetime | None = None) -> bool:
+        current = now or datetime.now(UTC)
+        return self.lifecycle_status is PrecedentStatus.ACTIVE and (
+            self.valid_until is None or self.valid_until > current
+        )
 
     def profile_text(self) -> str:
         profile = self.profile

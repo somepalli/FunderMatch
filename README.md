@@ -9,7 +9,8 @@ extraction only through FinDocIQ's versioned HTTP contract.
 Phases 0–6 and the opt-in resilient agent supervisor are implemented:
 
 - async HTTP-only `FinDocIQClient`;
-- local Pydantic copy of `/extract` contract version `1.0`;
+- local Pydantic copies of development contract `1.0` and application-scoped
+  production contract `2.0`;
 - mandatory `(document_id, page_number, bbox)` provenance per figure;
 - tests for valid responses, missing provenance, upstream failures, and the
   prohibition on importing FinDocIQ internals;
@@ -378,10 +379,55 @@ $env:FINDOCIQ_BASE_URL = "http://127.0.0.1:8989"
 $env:FINDOCIQ_INGEST_TOKEN = "replace-with-a-separate-random-ingestion-token"
 ```
 
-Each successful intake is stored under `<intake-dir>/<application-id>/` with the
-original PDFs and a manifest of SHA-256 hashes and FinDocIQ document IDs. The pipeline
+Each development intake is stored under `<intake-dir>/<application-id>/`. With
+production guardrails enabled, PDFs and revealable workspace artifacts are instead
+AES-256-GCM envelope-encrypted under that application directory; checkpoints retain
+only references and hashes. The pipeline
 then runs hard rules before precedent retrieval and stops at `AWAITING_HUMAN`; no AI
 output approves or rejects a borrower.
+
+## Production guardrails
+
+`FUNDERMATCH_PRODUCTION_GUARDRAILS_ENABLED=true` enables the fail-closed production
+profile. It adds scoped five-minute FinDocIQ service JWTs, encrypted application
+workspace storage, PostgreSQL rate and concurrency limits, signed worker receipts,
+claim-ledger validation, masked normal responses, audited field-level reveal,
+active/unexpired precedent filtering, reviewer-authorized revoke/supersede, and an
+outbox-backed 30-day terminal deletion workflow. The legacy behavior remains available
+only when the flag is false.
+
+The reviewed policy is `configs/guardrails/production.yaml`. Both services calculate
+the same SHA-256 policy identity at startup; FunderMatch readiness fails if FinDocIQ
+reports a different hash. The production Compose file reads JWT, receipt, database,
+Langfuse, reviewer, and AES keys from files in `secrets/`; those files are ignored by
+Git. It publishes only Caddy at `https://127.0.0.1:8977`, while FinDocIQ, PostgreSQL,
+Qdrant, ClamAV, and vLLM remain on private Docker networks.
+
+Before starting, place the pinned BGE-M3 snapshot at `models/bge-m3` and FinDocIQ's
+pinned BGE-M3/reranker snapshots under `models/findociq` using the paths documented in
+FinDocIQ's index config. Create the secret files named by
+`docker-compose.production.yml`; `document_master_key.b64` must decode to exactly 32
+bytes, and `database_url.txt` must use the password in `postgres_password.txt`.
+
+```powershell
+docker compose -f docker-compose.production.yml config
+docker compose -f docker-compose.production.yml up --build
+```
+
+Suspicious PDFs are blocked and retained only as encrypted quarantine objects. Clean
+documents must return scan, DLP, encrypted-storage, and ownership receipt hashes before
+the document worker can checkpoint. Prompt-like document instructions stop at
+`needs_attention`; malware, active content, embedded files, ownership violations,
+invalid worker receipts, and ineligible-funder leakage fail closed. Langfuse receives
+structural identifiers, hashes, counts, timing, and safe codes only; its outage never
+changes workflow execution.
+
+Use `fundermatch-rotate-workspace-keys` and FinDocIQ's
+`findociq-rotate-document-keys` during an offline maintenance window. Both commands
+rewrap per-object data keys, preserve ciphertext, and write policy-linked rotation
+audit events. The additional invented adversarial gate is
+`evals/datasets/production_security_cases.jsonl` (`n=8`), kept separate from the
+existing `n=24` matching/recovery evaluation.
 
 ## Agent memory and recovery
 

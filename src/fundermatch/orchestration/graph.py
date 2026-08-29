@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -28,6 +29,8 @@ from fundermatch.orchestration.schema import (
     WorkerResult,
     WriteReceipt,
 )
+from fundermatch.security.policy import WorkerExecutionPolicy
+from fundermatch.security.receipts import ReceiptSigner
 
 
 class _GraphState(TypedDict, total=False):
@@ -77,20 +80,47 @@ class WorkerContext:
     application_id: str
     command_id: UUID
     max_tool_calls: int = 8
+    permitted_tools: frozenset[str] | None = None
+    call_timeout_seconds: float | None = None
     _tool_calls: int = field(default=0, init=False, repr=False)
+    _tools: list[str] = field(default_factory=list, init=False, repr=False)
 
     @property
     def tool_calls_used(self) -> int:
         return self._tool_calls
 
-    def consume_tool_call(self) -> None:
+    @property
+    def tools_used(self) -> tuple[str, ...]:
+        return tuple(self._tools)
+
+    def consume_tool_call(self, tool_name: str = "legacy_tool") -> None:
+        if self.permitted_tools is not None and tool_name not in self.permitted_tools:
+            raise WorkerFailure(
+                "tool_not_permitted",
+                "worker attempted a tool outside its production policy",
+                retryable=False,
+            )
         self._tool_calls += 1
+        self._tools.append(tool_name)
         if self._tool_calls > self.max_tool_calls:
             raise WorkerFailure(
                 "tool_budget_exceeded",
                 "worker exceeded its bounded tool-call budget",
                 retryable=False,
             )
+
+    async def execute(self, tool_name: str, operation):  # type: ignore[no-untyped-def]
+        self.consume_tool_call(tool_name)
+        if self.call_timeout_seconds is None:
+            return await operation
+        try:
+            return await asyncio.wait_for(operation, timeout=self.call_timeout_seconds)
+        except TimeoutError as error:
+            raise WorkerFailure(
+                "tool_timeout",
+                "worker tool exceeded its production timeout",
+                retryable=True,
+            ) from error
 
 
 class ApplicationWorker(Protocol):
@@ -115,6 +145,10 @@ class ApplicationMemoryGraph:
         max_tool_calls: int = 8,
         recorder: AgentSpanRecorder | None = None,
         activity: Callable[..., Awaitable[None]] | None = None,
+        execution_policies: dict[str, WorkerExecutionPolicy] | None = None,
+        policy_hash: str | None = None,
+        receipt_signer: ReceiptSigner | None = None,
+        retention_cleanup: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         if not workers:
             raise ValueError("at least one application worker is required")
@@ -128,6 +162,10 @@ class ApplicationMemoryGraph:
         self.max_tool_calls = max_tool_calls
         self.recorder = recorder or NoopAgentSpanRecorder()
         self.activity = activity
+        self.execution_policies = execution_policies or {}
+        self.policy_hash = policy_hash
+        self.receipt_signer = receipt_signer
+        self.retention_cleanup = retention_cleanup
 
         builder = StateGraph(_GraphState)
         builder.add_node("run_worker", self._run_worker)
@@ -165,6 +203,12 @@ class ApplicationMemoryGraph:
             GraphStatus.NEEDS_ATTENTION,
         }:
             raise ValueError(f"memory thread cannot resume from {current.status.value}")
+        policy = self.execution_policies.get(current.current_node.value)
+        if policy is not None and current.status == GraphStatus.FAILED_RETRYABLE:
+            completed_attempts = current.attempts.get(current.current_node, 0)
+            if completed_attempts >= policy.max_attempts:
+                return await self.mark_terminal(application_id, GraphStatus.FAILED_TERMINAL)
+            await asyncio.sleep(policy.backoff_seconds * (2 ** max(0, completed_attempts - 1)))
         return await self._invoke(
             {
                 "application_id": application_id,
@@ -340,6 +384,8 @@ class ApplicationMemoryGraph:
     async def cleanup_expired(self, now: datetime | None = None) -> tuple[str, ...]:
         expired = await self.lifecycle.expired(now)
         for application_id in expired:
+            if self.retention_cleanup is not None:
+                await self.retention_cleanup(application_id)
             await self.checkpointer.adelete_thread(application_id)
             await self.lifecycle.delete(application_id)
         return expired
@@ -389,10 +435,13 @@ class ApplicationMemoryGraph:
         worker_name = state.current_node
         attempts = dict(state.attempts)
         attempts[worker_name] = attempts.get(worker_name, 0) + 1
+        policy = self.execution_policies.get(worker_name.value)
         context = WorkerContext(
             application_id=state.application_id,
             command_id=state.command_id_for(worker_name),
-            max_tool_calls=self.max_tool_calls,
+            max_tool_calls=policy.max_calls if policy else self.max_tool_calls,
+            permitted_tools=frozenset(policy.permitted_tools) if policy else None,
+            call_timeout_seconds=policy.call_timeout_seconds if policy else None,
         )
         await self._notify_activity(
             state.application_id,
@@ -401,7 +450,18 @@ class ApplicationMemoryGraph:
             attempt=attempts[worker_name],
         )
         try:
-            result = await self.workers[worker_name].run(state, context)
+            if policy is not None and attempts[worker_name] > policy.max_attempts:
+                raise WorkerFailure(
+                    "worker_attempt_limit_exceeded",
+                    "worker exceeded its production attempt limit",
+                    retryable=False,
+                )
+            operation = self.workers[worker_name].run(state, context)
+            result = (
+                await asyncio.wait_for(operation, timeout=policy.worker_deadline_seconds)
+                if policy
+                else await operation
+            )
             if result.worker != worker_name:
                 raise WorkerFailure(
                     "worker_identity_mismatch",
@@ -440,6 +500,19 @@ class ApplicationMemoryGraph:
                 guardrail_code=error.code if worker_name == WorkerName.GUARDRAILS else None,
             )
             return update
+        except TimeoutError:
+            update = {
+                **state.model_dump(mode="json"),
+                "attempts": {key.value: value for key, value in attempts.items()},
+                "status": GraphStatus.FAILED_RETRYABLE.value,
+                "last_error": WorkerError(
+                    worker=worker_name,
+                    code="worker_deadline_exceeded",
+                    message="worker exceeded its production deadline",
+                    retryable=True,
+                ).model_dump(mode="json"),
+            }
+            return update
         except Exception:
             update = {
                 **state.model_dump(mode="json"),
@@ -470,7 +543,9 @@ class ApplicationMemoryGraph:
             )
             return update
 
-        update = self._success_update(state, result, attempts)
+        update = self._success_update(
+            state, result, attempts, context, (perf_counter() - started) * 1000
+        )
         updated_state = ApplicationMemoryState.model_validate(update)
         await self._record_worker_span(
             updated_state,
@@ -534,12 +609,27 @@ class ApplicationMemoryGraph:
         state: ApplicationMemoryState,
         result: WorkerResult,
         attempts: dict[WorkerName, int],
+        context: WorkerContext,
+        latency_ms: float,
     ) -> dict[str, object]:
         completed = (*state.completed_workers, result.worker)
         pending = tuple(worker for worker in self.worker_order if worker not in completed)
         current = pending[0] if pending else result.worker
         status = GraphStatus.RUNNING if pending else GraphStatus.WAITING_FOR_REVIEW
         values = state.model_dump(mode="json")
+        receipt = WorkerReceipt(
+            worker=result.worker,
+            command_id=state.command_id_for(result.worker),
+            output_sha256=result.output_sha256,
+            attempt=attempts[result.worker],
+            tool_calls=context.tools_used,
+            latency_ms=latency_ms,
+            policy_hash=self.policy_hash,
+        )
+        if self.receipt_signer is not None:
+            receipt = receipt.model_copy(
+                update={"signature": self.receipt_signer.sign(receipt.signed_payload())}
+            )
         values.update(
             {
                 "status": status.value,
@@ -549,11 +639,7 @@ class ApplicationMemoryGraph:
                 "attempts": {key.value: value for key, value in attempts.items()},
                 "worker_receipts": [
                     *values["worker_receipts"],
-                    WorkerReceipt(
-                        worker=result.worker,
-                        command_id=state.command_id_for(result.worker),
-                        output_sha256=result.output_sha256,
-                    ).model_dump(mode="json"),
+                    receipt.model_dump(mode="json"),
                 ],
                 "write_receipts": [
                     *values["write_receipts"],

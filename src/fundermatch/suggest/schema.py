@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from fundermatch.clients.findociq_contract import SourceCitation
 from fundermatch.matching.schema import PrecedentMatch
 from fundermatch.rules.schema import BorrowerApplication, RuleCheck
 
@@ -64,6 +65,27 @@ class ExcludedFunder(BaseModel):
         return self
 
 
+class GroundedClaim(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    claim_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    application_id: str
+    claim_type: Literal["evidence", "calculation", "precedent"]
+    text: str = Field(min_length=1, max_length=1000)
+    citation: SourceCitation | None = None
+    calculation_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    precedent_id: str | None = None
+    policy_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def require_grounding(self) -> GroundedClaim:
+        sources = (self.citation is not None, self.calculation_sha256 is not None,
+                   self.precedent_id is not None)
+        if sum(sources) != 1:
+            raise ValueError("claim must resolve to exactly one grounding source")
+        return self
+
+
 class SuggestionBundle(BaseModel):
     """Evidence for a human reviewer; deliberately contains no decision field."""
 
@@ -75,6 +97,7 @@ class SuggestionBundle(BaseModel):
     application: BorrowerApplication
     candidates: tuple[AdvisoryCandidate, ...]
     excluded_funders: tuple[ExcludedFunder, ...]
+    claims: tuple[GroundedClaim, ...] = Field(default=(), max_length=500)
 
     @model_validator(mode="after")
     def validate_partition(self) -> SuggestionBundle:

@@ -62,3 +62,23 @@ class SendBackRoutingCase(BaseModel):
     selected_stage: str | None
     expected_stage: str | None
     expected_stop_state: GraphStatus
+
+
+class ProductionSecurityCase(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    case_id: str
+    attack: Literal[
+        "active_pdf",
+        "cross_application",
+        "ineligible_funder",
+        "pii_exfiltration",
+        "prompt_injection",
+        "revoked_precedent",
+        "service_jwt_replay",
+        "unsupported_claim",
+    ]
+    fixture: str
+    expected_guardrail_code: str
+    expected_stop_state: GraphStatus
+    forbidden_outcomes: tuple[str, ...]

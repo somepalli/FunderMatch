@@ -12,6 +12,8 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import asyncpg
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
+from fundermatch.security.secrets import read_secret
+
 
 def checkpoint_dsn(dsn: str) -> str:
     """Force all unqualified LangGraph checkpointer SQL into its own schema."""
@@ -52,4 +54,4 @@ async def setup_memory(dsn: str, migration_path: Path | None = None) -> None:
 def main() -> None:
     if os.name == "nt":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    asyncio.run(setup_memory(os.environ["FUNDERMATCH_DATABASE_URL"]))
+    asyncio.run(setup_memory(read_secret("FUNDERMATCH_DATABASE_URL")))

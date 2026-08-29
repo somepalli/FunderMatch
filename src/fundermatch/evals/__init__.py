@@ -1,5 +1,9 @@
 """Held-out FunderMatch agent evaluation contracts."""
 
-from fundermatch.evals.schema import AgentReleaseCase, SendBackRoutingCase
+from fundermatch.evals.schema import (
+    AgentReleaseCase,
+    ProductionSecurityCase,
+    SendBackRoutingCase,
+)
 
-__all__ = ["AgentReleaseCase", "SendBackRoutingCase"]
+__all__ = ["AgentReleaseCase", "ProductionSecurityCase", "SendBackRoutingCase"]

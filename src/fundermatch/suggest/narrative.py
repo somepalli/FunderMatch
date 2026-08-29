@@ -17,6 +17,15 @@ PROHIBITED_AUTHORITY = re.compile(
     r"|\b(?:approve|reject)\s+(?:this|the)\s+application\b",
     flags=re.IGNORECASE,
 )
+SENSITIVE_OUTPUT = re.compile(
+    r"\b[A-Z]{5}[0-9]{4}[A-Z]\b|\b[A-Z]{4}0[A-Z0-9]{6}\b|"
+    r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b",
+    flags=re.IGNORECASE,
+)
+AUTHORITY_OUTPUT = re.compile(
+    r"\b(?:automatically\s+(?:approved|rejected)|guaranteed\s+approval|we\s+(?:approve|reject))\b",
+    re.IGNORECASE,
+)
 
 
 class GemmaNarrativeConfig(BaseModel):
@@ -29,6 +38,7 @@ class GemmaNarrativeConfig(BaseModel):
     seed: int = 17
     max_tokens: int = Field(default=500, ge=64, le=2000)
     prompt_path: Path = Path("prompts/suggestion_narrative_system.txt")
+    production_guardrails_enabled: bool = False
 
 
 class GeneratedNarrative(BaseModel):
@@ -156,7 +166,10 @@ class GemmaNarrativeClient:
             response.raise_for_status()
             content = response.json()["choices"][0]["message"]["content"]
             output = GeneratedNarrative.model_validate_json(content)
-        except (httpx.HTTPError, KeyError, TypeError, ValidationError) as error:
+            self._validate_grounded(output, facts)
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError) as error:
+            if self.config.production_guardrails_enabled:
+                return self._fallback(facts)
             raise NarrativeUnavailable("Gemma narrative generation failed") from error
         return NarrativeRun(
             model_id=self.config.model_id,
@@ -164,4 +177,39 @@ class GemmaNarrativeClient:
             temperature=self.config.temperature,
             seed=self.config.seed,
             output=output,
+        )
+
+    @staticmethod
+    def _validate_grounded(output: GeneratedNarrative, facts: NarrativeFacts) -> None:
+        rendered = " ".join(
+            (output.summary, *output.similarities, *output.differences, output.caveat)
+        )
+        allowed_numbers = set(re.findall(r"[-+]?\d+(?:\.\d+)?", facts.model_dump_json()))
+        produced_numbers = set(re.findall(r"[-+]?\d+(?:\.\d+)?", rendered))
+        if not produced_numbers <= allowed_numbers:
+            raise ValueError("narrative introduced an unsupported numeric claim")
+        if SENSITIVE_OUTPUT.search(rendered):
+            raise ValueError("narrative contains a protected identifier")
+        if AUTHORITY_OUTPUT.search(rendered):
+            raise ValueError("narrative attempted to make a lending decision")
+        if "human" not in output.caveat.casefold():
+            raise ValueError("narrative omitted human-decision authority")
+
+    def _fallback(self, facts: NarrativeFacts) -> NarrativeRun:
+        precedent_state = (
+            "Verified historical precedents are available for reviewer comparison."
+            if facts.precedents
+            else "No close verified precedent is available."
+        )
+        return NarrativeRun(
+            model_id="deterministic-template",
+            revision="guardrail-fallback-v1",
+            temperature=0.0,
+            seed=self.config.seed,
+            output=GeneratedNarrative(
+                summary=f"{facts.display_name} passed the configured deterministic checks.",
+                similarities=(precedent_state,),
+                differences=("Review the cited application evidence and policy checks.",),
+                caveat="Decision support only; a human reviewer makes the lending decision.",
+            ),
         )

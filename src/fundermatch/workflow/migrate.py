@@ -1,14 +1,14 @@
 """Apply the idempotent HITL workflow migration."""
 
 import asyncio
-import os
 from pathlib import Path
 
+from fundermatch.security.secrets import read_secret
 from fundermatch.workflow.postgres import PostgresWorkflowRepository
 
 
 async def run() -> None:
-    dsn = os.environ["FUNDERMATCH_DATABASE_URL"]
+    dsn = read_secret("FUNDERMATCH_DATABASE_URL")
     migration_dir = Path(__file__).resolve().parents[3] / "migrations"
     migrations = sorted(migration_dir.glob("*.sql"))
     if not migrations:

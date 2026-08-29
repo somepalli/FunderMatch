@@ -18,6 +18,8 @@ from fundermatch.orchestration.schema import (
 )
 from fundermatch.orchestration.workspace import ApplicationWorkspace
 from fundermatch.rules.schema import BorrowerApplication
+from fundermatch.security.policy import WorkerExecutionPolicy
+from fundermatch.security.receipts import ReceiptSigner
 from fundermatch.suggest.schema import SuggestionBundle
 
 
@@ -50,12 +52,42 @@ class GuardrailWorker:
         self,
         workspace: ApplicationWorkspace,
         precedent_resolver: PrecedentResolver | None = None,
+        policy_hash: str | None = None,
+        receipt_signer: ReceiptSigner | None = None,
+        execution_policies: dict[str, WorkerExecutionPolicy] | None = None,
     ) -> None:
         self.workspace = workspace
         self.precedent_resolver = precedent_resolver
+        self.policy_hash = policy_hash
+        self.receipt_signer = receipt_signer
+        self.execution_policies = execution_policies or {}
 
     async def run(self, state: ApplicationMemoryState, context: WorkerContext) -> WorkerResult:
-        context.consume_tool_call()
+        if self.policy_hash is not None:
+            if self.receipt_signer is None:
+                self._terminal("receipt_verifier_missing", "Worker receipt verifier is missing")
+            for receipt in state.worker_receipts:
+                if receipt.policy_hash != self.policy_hash or not receipt.signature:
+                    self._terminal(
+                        "worker_receipt_invalid", "Worker receipt policy identity is invalid"
+                    )
+                if not self.receipt_signer.verify(receipt.signed_payload(), receipt.signature):
+                    self._terminal("worker_receipt_invalid", "Worker receipt signature is invalid")
+                execution = self.execution_policies.get(receipt.worker.value)
+                if execution is None:
+                    self._terminal(
+                        "worker_policy_missing", "Worker receipt has no production execution policy"
+                    )
+                if (
+                    receipt.attempt > execution.max_attempts
+                    or len(receipt.tool_calls) > execution.max_calls
+                    or any(tool not in execution.permitted_tools for tool in receipt.tool_calls)
+                    or receipt.latency_ms > execution.worker_deadline_seconds * 1000
+                ):
+                    self._terminal(
+                        "worker_policy_violation",
+                        "Worker receipt violates tool, retry, or deadline policy",
+                    )
         application = self.workspace.load(
             state.application_id, WorkerName.FINANCIAL_ANALYSIS.value, BorrowerApplication
         )
@@ -80,6 +112,16 @@ class GuardrailWorker:
         if any(item.document_id not in document_ids for item in state.evidence):
             self._terminal(
                 "cross_application_evidence", "Evidence does not belong to this application"
+            )
+        if any(
+            item.page_number < 1
+            or item.bbox.x1 <= item.bbox.x0
+            or item.bbox.y1 <= item.bbox.y0
+            for item in state.evidence
+        ):
+            self._attention(
+                "invalid_citation_geometry",
+                "Cited evidence requires a valid page and non-empty bounding box",
             )
         expected_values = {
             "annual_revenue_crore": str(application.profile.annual_revenue_crore),
@@ -111,9 +153,12 @@ class GuardrailWorker:
             )
         if precedent_ids:
             try:
-                resolved = await asyncio.to_thread(
-                    self.precedent_resolver.resolve,
-                    precedent_ids,  # type: ignore[union-attr]
+                resolved = await context.execute(
+                    "qdrant_verify",
+                    asyncio.to_thread(
+                        self.precedent_resolver.resolve,
+                        precedent_ids,  # type: ignore[union-attr]
+                    ),
                 )
             except Exception as error:
                 raise WorkerFailure(
@@ -133,15 +178,63 @@ class GuardrailWorker:
             self._attention(
                 "missing_advisory_notice", "Suggestion is missing the human-authority notice"
             )
+        evidence_citations = {
+            (
+                item.document_id,
+                item.page_number,
+                item.bbox.x0,
+                item.bbox.y0,
+                item.bbox.x1,
+                item.bbox.y1,
+            )
+            for item in state.evidence
+        }
+        precedent_set = set(precedent_ids)
+        if self.policy_hash is not None and not suggestion.claims:
+            self._attention("missing_claim_ledger", "Suggestion claim ledger is required")
+        for claim in suggestion.claims:
+            if claim.application_id != state.application_id:
+                self._terminal("cross_application_claim", "Claim belongs to another application")
+            if self.policy_hash is not None and claim.policy_hash != self.policy_hash:
+                self._terminal("claim_policy_mismatch", "Claim policy identity is invalid")
+            if claim.citation is not None and (
+                claim.citation.document_id,
+                claim.citation.page_number,
+                claim.citation.bbox.x0,
+                claim.citation.bbox.y0,
+                claim.citation.bbox.x1,
+                claim.citation.bbox.y1,
+            ) not in evidence_citations:
+                self._attention("unsupported_output_claim", "Output claim lacks owned evidence")
+            if claim.precedent_id is not None and claim.precedent_id not in precedent_set:
+                self._attention("unsupported_output_claim", "Output claim lacks precedent evidence")
 
+        checkpoint_size = len(state.model_dump_json().encode("utf-8"))
+        if checkpoint_size > 256 * 1024:
+            self._terminal(
+                "checkpoint_size_violation", "Checkpoint exceeds the production size policy"
+            )
         results = (
             GuardrailResult(guardrail="citation_presence", passed=True),
             GuardrailResult(guardrail="evidence_ownership", passed=True),
             GuardrailResult(guardrail="numeric_grounding", passed=True),
             GuardrailResult(guardrail="eligible_only", passed=True),
             GuardrailResult(guardrail="human_authority", passed=True),
-            GuardrailResult(guardrail="checkpoint_schema", passed=True),
-            GuardrailResult(guardrail="tool_timeout_retry_loop_limits", passed=True),
+            GuardrailResult(guardrail="claim_grounding", passed=True),
+            GuardrailResult(
+                guardrail="checkpoint_schema",
+                passed=True,
+            ),
+            GuardrailResult(
+                guardrail="tool_timeout_retry_loop_limits",
+                passed=(
+                    self.policy_hash is None
+                    or all(
+                        item.policy_hash == self.policy_hash and bool(item.signature)
+                        for item in state.worker_receipts
+                    )
+                ),
+            ),
         )
         return WorkerResult(
             worker=self.name,

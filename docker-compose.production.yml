@@ -1,0 +1,145 @@
+services:
+  proxy:
+    image: caddy:2.10.2-alpine
+    ports:
+      - "127.0.0.1:8977:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    networks: [public]
+    depends_on: [fundermatch]
+    restart: unless-stopped
+
+  fundermatch:
+    build: .
+    environment:
+      FUNDERMATCH_PRODUCTION_GUARDRAILS_ENABLED: "true"
+      FUNDERMATCH_AGENT_ORCHESTRATION_ENABLED: "true"
+      FUNDERMATCH_DATABASE_URL_FILE: /run/secrets/database_url
+      FUNDERMATCH_INTAKE_DIR: /data/intake
+      FUNDERMATCH_BGE_SNAPSHOT_DIR: /models/bge-m3
+      FUNDERMATCH_QDRANT_URL: http://qdrant:6333
+      FINDOCIQ_BASE_URL: http://findociq:8989
+      FINDOCIQ_SERVICE_JWT_SECRET_FILE: /run/secrets/service_jwt
+      FUNDERMATCH_RECEIPT_SIGNING_SECRET_FILE: /run/secrets/receipt_signing
+      FUNDERMATCH_DOCUMENT_MASTER_KEY_FILE: /run/secrets/document_master_key
+      FUNDERMATCH_JWT_SECRET_FILE: /run/secrets/reviewer_jwt
+      FUNDERMATCH_ALLOWED_HOSTS: localhost,127.0.0.1
+      FUNDERMATCH_GUARDRAIL_POLICY: /app/configs/guardrails/production.yaml
+      FUNDERMATCH_LANGFUSE_OTLP_ENDPOINT: http://host.docker.internal:3000/api/public/otel/v1/traces
+      FUNDERMATCH_LANGFUSE_HEALTH_URL: http://host.docker.internal:3000/api/public/health
+      FUNDERMATCH_VLLM_BASE_URL: http://vllm:8000/v1
+      FUNDERMATCH_VLLM_HEALTH_URL: http://vllm:8000/health
+      LANGFUSE_PUBLIC_KEY_FILE: /run/secrets/langfuse_public_key
+      LANGFUSE_SECRET_KEY_FILE: /run/secrets/langfuse_secret_key
+    secrets: [service_jwt, receipt_signing, reviewer_jwt, document_master_key, database_url, langfuse_public_key, langfuse_secret_key]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - borrower_intake:/data/intake
+      - ./models/bge-m3:/models/bge-m3:ro
+    networks: [public, application, model_data]
+    command: ["sh", "-c", "fundermatch-migrate-workflow && fundermatch-migrate-memory && uvicorn fundermatch.api.app:create_app --factory --host 0.0.0.0 --port 8977"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      findociq: {condition: service_started}
+    restart: unless-stopped
+
+  findociq:
+    build:
+      context: ../FinDocs_Analysi_Evals
+    environment:
+      FINDOCIQ_PRODUCTION_GUARDRAILS_ENABLED: "true"
+      FINDOCIQ_DATABASE_URL_FILE: /run/secrets/database_url
+      FINDOCIQ_DOCUMENT_ROOT: /data/documents
+      FINDOCIQ_SERVICE_JWT_SECRET_FILE: /run/secrets/service_jwt
+      FINDOCIQ_DOCUMENT_MASTER_KEY_FILE: /run/secrets/document_master_key
+      FINDOCIQ_GUARDRAIL_POLICY: /app/configs/guardrails/production.yaml
+      FINDOCIQ_CLAMAV_HOST: clamav
+      LANGFUSE_PUBLIC_KEY_FILE: /run/secrets/langfuse_public_key
+      LANGFUSE_SECRET_KEY_FILE: /run/secrets/langfuse_secret_key
+    secrets: [service_jwt, document_master_key, database_url, langfuse_public_key, langfuse_secret_key]
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    volumes:
+      - encrypted_documents:/data/documents
+      - ./models/findociq:/app/.artifacts/models:ro
+    tmpfs:
+      - /tmp:size=2g,mode=700
+    networks: [application, model_data]
+    command: ["sh", "-c", "findociq-migrate-security && findociq-api --host 0.0.0.0 --port 8989 --config configs/api/docker.yaml"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      clamav: {condition: service_healthy}
+      qdrant: {condition: service_started}
+      vllm: {condition: service_started}
+    restart: unless-stopped
+
+  clamav:
+    image: clamav/clamav:1.4.3
+    networks: [model_data]
+    volumes:
+      - clamav_db:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: fundermatch
+      POSTGRES_USER: fundermatch
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [fundermatch_postgres:/var/lib/postgresql/data]
+    networks: [application]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fundermatch -d fundermatch"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  qdrant:
+    image: qdrant/qdrant:v1.18.0
+    volumes: [qdrant_data:/qdrant/storage]
+    networks: [model_data]
+    restart: unless-stopped
+
+  vllm:
+    image: vllm/vllm-openai:v0.27.1@sha256:0a51ea5b4ae2dc5d81890e5173f54203d2a3ae0cfffe51b8fd2afd4391bfd967
+    ipc: host
+    command: ["--model", "gaunernst/gemma-3-4b-it-int4-awq", "--served-model-name", "google/gemma-3-4b-it", "--quantization", "awq", "--enable-sleep-mode"]
+    volumes: [huggingface_cache:/root/.cache/huggingface]
+    networks: [model_data]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - {driver: nvidia, count: 1, capabilities: [gpu]}
+    restart: unless-stopped
+
+networks:
+  public: {}
+  application: {internal: true}
+  model_data: {internal: true}
+
+secrets:
+  service_jwt: {file: ./secrets/service_jwt.txt}
+  receipt_signing: {file: ./secrets/receipt_signing.txt}
+  reviewer_jwt: {file: ./secrets/reviewer_jwt.txt}
+  document_master_key: {file: ./secrets/document_master_key.b64}
+  database_url: {file: ./secrets/database_url.txt}
+  postgres_password: {file: ./secrets/postgres_password.txt}
+  langfuse_public_key: {file: ./secrets/langfuse_public_key.txt}
+  langfuse_secret_key: {file: ./secrets/langfuse_secret_key.txt}
+
+volumes:
+  borrower_intake: {}
+  encrypted_documents: {}
+  fundermatch_postgres: {}
+  qdrant_data: {}
+  huggingface_cache: {}
+  clamav_db: {}
+  caddy_data: {}
