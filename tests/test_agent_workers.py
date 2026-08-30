@@ -60,6 +60,16 @@ class FakeFinDocIQ:
             "annual_revenue_crore": ("Revenue", "100", "INR crore"),
             "ebitda_margin_pct": ("EBITDA margin", "12.5", "%"),
             "dscr": ("DSCR", "1.5", "x"),
+            "pat_crore": ("PAT", "8", "INR crore"),
+            "debt_to_equity": ("Debt to equity", "1.1", "x"),
+            "debt_to_ebitda": ("Debt to EBITDA", "1.2", "x"),
+            "collateral_cover": ("Collateral cover", "1.2", "x"),
+            "years_operating": ("Years operating", "10", "years"),
+            "employee_count": ("Employee count", "200", "count"),
+            "borrower_name": ("Borrower", "Synthetic Borrower", "text"),
+            "industry": ("Industry", "Manufacturing", "text"),
+            "sub_industry": ("Sub-industry", "Engineering components", "text"),
+            "region": ("Region", "North", "text"),
         }
         label, value, unit = values[metric]
         return ExtractResponse(
@@ -97,16 +107,8 @@ def test_fixed_worker_flow_resumes_financial_substeps_without_repeating_them(
         workspace = ApplicationWorkspace(tmp_path)
         metadata = IntakeMetadata(
             application_id="APP-AGENT-001",
-            borrower_name="Synthetic Borrower",
-            industry="Manufacturing",
-            region="North",
             requested_amount_crore=Decimal("12"),
-            debt_to_ebitda=Decimal("1.2"),
-            collateral_cover=Decimal("1.2"),
-            years_operating=10,
-            employee_count=200,
-            finance_context="Synthetic finance context",
-            operations_context="Synthetic operations context",
+            loan_type="term_loan",
         )
         references = workspace.stage(
             metadata,
@@ -119,6 +121,7 @@ def test_fixed_worker_flow_resumes_financial_substeps_without_repeating_them(
             display_name="Test Funder",
             allowed_industries=frozenset({"Manufacturing"}),
             allowed_regions=frozenset({"North"}),
+            allowed_loan_types=frozenset({"term_loan"}),
             min_requested_amount_crore=Decimal("1"),
             max_requested_amount_crore=Decimal("20"),
             min_dscr=Decimal("1"),
@@ -165,6 +168,16 @@ def test_fixed_worker_flow_resumes_financial_substeps_without_repeating_them(
             "annual_revenue_crore": 1,
             "ebitda_margin_pct": 1,
             "dscr": 2,
+            "pat_crore": 1,
+            "debt_to_equity": 1,
+            "debt_to_ebitda": 1,
+            "collateral_cover": 1,
+            "years_operating": 1,
+            "employee_count": 1,
+            "borrower_name": 1,
+            "industry": 1,
+            "sub_industry": 1,
+            "region": 1,
         }
         record = await workflow.get(metadata.application_id)
         assert record.state == WorkflowState.AWAITING_HUMAN

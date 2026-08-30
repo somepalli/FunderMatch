@@ -7,7 +7,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from fundermatch.clients.findociq_contract import SourceCitation
 
@@ -32,7 +32,9 @@ class FinancialProfile(BaseModel):
     annual_revenue_crore: Decimal = Field(gt=0)
     requested_amount_crore: Decimal = Field(gt=0)
     ebitda_margin_pct: Decimal = Field(ge=-100, le=100)
+    pat_crore: Decimal = Decimal("0")
     dscr: Decimal = Field(gt=0)
+    debt_to_equity: Decimal = Field(default=Decimal("0"), ge=0)
     debt_to_ebitda: Decimal = Field(ge=0)
     collateral_cover: Decimal = Field(ge=0)
     years_operating: int = Field(ge=0)
@@ -44,11 +46,36 @@ class EvidenceMetric(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    name: Literal["annual_revenue_crore", "ebitda_margin_pct", "dscr"]
-    value: Decimal
+    name: Literal[
+        "annual_revenue_crore",
+        "ebitda_margin_pct",
+        "dscr",
+        "pat_crore",
+        "debt_to_equity",
+        "debt_to_ebitda",
+        "collateral_cover",
+        "years_operating",
+        "employee_count",
+        "borrower_name",
+        "industry",
+        "sub_industry",
+        "region",
+    ]
+    value: Decimal | str
     unit: str = Field(min_length=1)
     period: str = Field(min_length=1)
     citation: SourceCitation
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def normalize_value(cls, value: object, info: ValidationInfo) -> Decimal | str:
+        text_facts = {"borrower_name", "industry", "sub_industry", "region"}
+        if info.data.get("name") in text_facts:
+            text = str(value).strip()
+            if not text:
+                raise ValueError("text evidence cannot be empty")
+            return text
+        return Decimal(str(value))
 
 
 class ReviewerComment(BaseModel):
@@ -102,9 +129,11 @@ class DecidedLoanCase(BaseModel):
     case_id: str = Field(min_length=3, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]+$")
     borrower_name: str = Field(min_length=1)
     industry: str = Field(min_length=1)
+    sub_industry: str = Field(default="Unclassified", min_length=1)
     region: str = Field(min_length=1)
+    loan_type: str = Field(default="term_loan", pattern=r"^[a-z][a-z0-9_]{1,79}$")
     profile: FinancialProfile
-    evidence: tuple[EvidenceMetric, ...] = Field(min_length=3, max_length=3)
+    evidence: tuple[EvidenceMetric, ...] = Field(min_length=3, max_length=20)
     comments: tuple[ReviewerComment, ...] = Field(min_length=2)
     decision: HumanDecision
     lifecycle_status: PrecedentStatus = PrecedentStatus.ACTIVE
@@ -119,8 +148,21 @@ class DecidedLoanCase(BaseModel):
             "annual_revenue_crore": self.profile.annual_revenue_crore,
             "ebitda_margin_pct": self.profile.ebitda_margin_pct,
             "dscr": self.profile.dscr,
+            "pat_crore": self.profile.pat_crore,
+            "debt_to_equity": self.profile.debt_to_equity,
+            "debt_to_ebitda": self.profile.debt_to_ebitda,
+            "collateral_cover": self.profile.collateral_cover,
+            "years_operating": Decimal(self.profile.years_operating),
+            "employee_count": Decimal(self.profile.employee_count),
+            "borrower_name": self.borrower_name,
+            "industry": self.industry,
+            "sub_industry": self.sub_industry,
+            "region": self.region,
         }
-        if metrics != expected:
+        required = {"annual_revenue_crore", "ebitda_margin_pct", "dscr"}
+        if not required <= metrics.keys() or any(
+            expected[name] != value for name, value in metrics.items()
+        ):
             raise ValueError("evidence metrics must exactly match normalized profile values")
         teams = {comment.team for comment in self.comments}
         if teams != {"finance", "operations"}:
@@ -138,10 +180,13 @@ class DecidedLoanCase(BaseModel):
     def profile_text(self) -> str:
         profile = self.profile
         return (
-            f"Industry: {self.industry}. Region: {self.region}. "
+            f"Industry: {self.industry}. Sub-industry: {self.sub_industry}. "
+            f"Region: {self.region}. Loan type: {self.loan_type}. "
             f"Revenue INR {profile.annual_revenue_crore} crore. "
             f"Requested amount INR {profile.requested_amount_crore} crore. "
-            f"EBITDA margin {profile.ebitda_margin_pct} percent. DSCR {profile.dscr}. "
+            f"EBITDA margin {profile.ebitda_margin_pct} percent. "
+            f"PAT INR {profile.pat_crore} crore. DSCR {profile.dscr}. "
+            f"Debt to equity {profile.debt_to_equity}. "
             f"Debt to EBITDA {profile.debt_to_ebitda}. "
             f"Collateral cover {profile.collateral_cover}. "
             f"Operating history {profile.years_operating} years."

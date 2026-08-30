@@ -15,6 +15,11 @@ to Qdrant as a searchable precedent.
 show its comments and outcome as precedent -> wait for a human decision -> write
 the new decision back as precedent.
 
+The borrower intake boundary accepts only requested amount and loan type. Borrower
+identity, industry, sub-industry, region, PAT, DSCR, leverage, employee count, and all
+other eligibility facts must come from cited FinDocIQ document evidence; no manual
+fallback is permitted.
+
 ## Phase 0 — contract
 
 Confirm FinDocIQ `POST /extract`. Implement an async `FinDocIQClient` that calls it

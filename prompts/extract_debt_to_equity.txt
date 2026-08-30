@@ -1,0 +1,1 @@
+Extract the latest debt-to-equity ratio and return exact document, page, and bbox provenance.

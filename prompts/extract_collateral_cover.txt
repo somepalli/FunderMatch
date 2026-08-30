@@ -1,0 +1,1 @@
+Extract the latest collateral or security cover ratio and return exact document, page, and bbox provenance.

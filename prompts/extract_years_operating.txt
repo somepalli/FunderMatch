@@ -1,0 +1,1 @@
+Extract the borrower's completed years of operation from its incorporation or commencement date and return exact document, page, and bbox provenance.

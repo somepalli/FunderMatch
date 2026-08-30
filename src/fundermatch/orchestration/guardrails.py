@@ -127,6 +127,16 @@ class GuardrailWorker:
             "annual_revenue_crore": str(application.profile.annual_revenue_crore),
             "ebitda_margin_pct": str(application.profile.ebitda_margin_pct),
             "dscr": str(application.profile.dscr),
+            "pat_crore": str(application.profile.pat_crore),
+            "debt_to_equity": str(application.profile.debt_to_equity),
+            "debt_to_ebitda": str(application.profile.debt_to_ebitda),
+            "collateral_cover": str(application.profile.collateral_cover),
+            "years_operating": str(application.profile.years_operating),
+            "employee_count": str(application.profile.employee_count),
+            "borrower_name": application.borrower_name,
+            "industry": application.industry,
+            "sub_industry": application.sub_industry,
+            "region": application.region,
         }
         for evidence in state.evidence:
             if (

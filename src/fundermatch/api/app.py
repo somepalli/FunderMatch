@@ -42,6 +42,7 @@ from fundermatch.intake import (
     BorrowerIntakeService,
     IntakeMetadata,
     IntakeResult,
+    IntakeSubmission,
 )
 from fundermatch.intake_jobs import (
     InMemoryIntakeJobStore,
@@ -576,7 +577,8 @@ def create_app(
         if ActorRole.PIPELINE not in actor.roles:
             raise WorkflowAuthorizationError("pipeline role required")
         try:
-            parsed = IntakeMetadata.model_validate_json(metadata)
+            submission = IntakeSubmission.model_validate_json(metadata)
+            parsed = IntakeMetadata(**submission.model_dump())
             payloads = []
             total_bytes = 0
             for item in files:
@@ -608,7 +610,8 @@ def create_app(
         if ActorRole.PIPELINE not in actor.roles:
             raise WorkflowAuthorizationError("pipeline role required")
         try:
-            parsed = IntakeMetadata.model_validate_json(metadata)
+            submission = IntakeSubmission.model_validate_json(metadata)
+            parsed = IntakeMetadata(**submission.model_dump())
             payloads = await _read_uploaded_pdfs(files)
             job_id = f"intake-{uuid4().hex}"
             await job_store.create(job_id, parsed.application_id)
@@ -1314,6 +1317,14 @@ def _mask_workflow(record: WorkflowRecord) -> WorkflowRecord:
     for field in ("borrower_name", "finance_context", "operations_context"):
         if application.get(field):
             application[field] = "[MASKED]"
+    evidence = []
+    for item in application.get("evidence", []):
+        masked = dict(item)
+        if masked.get("name") == "borrower_name":
+            masked["value"] = "[MASKED]"
+        evidence.append(masked)
+    if evidence:
+        application["evidence"] = evidence
     suggestion["application"] = application
     return record.model_copy(update={"suggestion": suggestion})
 

@@ -33,17 +33,8 @@ class LiveFakeIntake:
 
 def metadata() -> dict[str, object]:
     return {
-        "application_id": "APP-LIVE-001",
-        "borrower_name": "Synthetic Borrower",
-        "industry": "Manufacturing",
-        "region": "South",
         "requested_amount_crore": "12",
-        "debt_to_ebitda": "1.2",
-        "collateral_cover": "2.0",
-        "years_operating": 10,
-        "employee_count": 200,
-        "finance_context": "Invented finance context",
-        "operations_context": "Invented operations context",
+        "loan_type": "working_capital",
     }
 
 

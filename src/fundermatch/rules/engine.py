@@ -35,6 +35,12 @@ class EligibilityEngine:
                 requirement=f"one of {sorted(policy.allowed_regions)}",
             ),
             RuleCheck(
+                criterion=RuleCriterion.LOAN_TYPE,
+                passed=application.loan_type in policy.allowed_loan_types,
+                actual=application.loan_type.value,
+                requirement=f"one of {sorted(item.value for item in policy.allowed_loan_types)}",
+            ),
+            RuleCheck(
                 criterion=RuleCriterion.REQUESTED_AMOUNT,
                 passed=(
                     policy.min_requested_amount_crore

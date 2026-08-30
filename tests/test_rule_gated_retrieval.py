@@ -63,7 +63,7 @@ def test_rules_report_every_criterion_before_retrieval(
     result = EligibilityEngine().evaluate(aligned_application, northstar)
 
     assert result.eligible
-    assert len(result.checks) == 7
+    assert len(result.checks) == 8
     assert {check.criterion for check in result.checks} == set(RuleCriterion)
     assert all(check.passed for check in result.checks)
 

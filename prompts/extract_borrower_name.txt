@@ -1,0 +1,1 @@
+Extract the borrower's full legal entity name and return exact document, page, and bbox provenance.

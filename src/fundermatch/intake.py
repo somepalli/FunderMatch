@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from decimal import Decimal, InvalidOperation
 from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -23,7 +24,7 @@ from fundermatch.clients.findociq_contract import (
 from fundermatch.matching.retriever import RuleGatedPrecedentRetriever
 from fundermatch.precedent.schema import EvidenceMetric, FinancialProfile
 from fundermatch.prompts import load_prompt
-from fundermatch.rules.schema import BorrowerApplication, FunderPolicy
+from fundermatch.rules.schema import BorrowerApplication, FunderPolicy, LoanType
 from fundermatch.suggest.assembler import SuggestionAssembler
 from fundermatch.workflow.schema import (
     ActorClaims,
@@ -38,21 +39,36 @@ MAX_BATCH_BYTES = 512 * 1024 * 1024
 
 ProgressReporter = Callable[..., Awaitable[None]]
 
+EXTRACTED_FACTS = (
+    "annual_revenue_crore",
+    "ebitda_margin_pct",
+    "dscr",
+    "pat_crore",
+    "debt_to_equity",
+    "debt_to_ebitda",
+    "collateral_cover",
+    "years_operating",
+    "employee_count",
+    "borrower_name",
+    "industry",
+    "sub_industry",
+    "region",
+)
+TEXT_FACTS = frozenset({"borrower_name", "industry", "sub_industry", "region"})
 
-class IntakeMetadata(BaseModel):
+
+class IntakeSubmission(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
 
-    application_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,199}$")
-    borrower_name: str = Field(min_length=1, max_length=200)
-    industry: str = Field(min_length=1, max_length=100)
-    region: str = Field(min_length=1, max_length=100)
     requested_amount_crore: Decimal = Field(gt=0)
-    debt_to_ebitda: Decimal = Field(ge=0)
-    collateral_cover: Decimal = Field(ge=0)
-    years_operating: int = Field(ge=0)
-    employee_count: int = Field(gt=0)
-    finance_context: str = Field(min_length=1, max_length=2000)
-    operations_context: str = Field(min_length=1, max_length=2000)
+    loan_type: LoanType
+
+
+class IntakeMetadata(IntakeSubmission):
+    application_id: str = Field(
+        default_factory=lambda: f"APP-{uuid4().hex[:12].upper()}",
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{2,199}$",
+    )
 
 
 class IntakeDocument(BaseModel):
@@ -235,7 +251,7 @@ class BorrowerIntakeService:
         progress: ProgressReporter | None = None,
     ) -> BorrowerApplication:
         document_ids = tuple(item.document_id for item in documents)
-        metrics = ("annual_revenue_crore", "ebitda_margin_pct", "dscr")
+        metrics = EXTRACTED_FACTS
         evidence = []
         for index, name in enumerate(metrics, start=1):
             await _report(
@@ -257,7 +273,7 @@ class BorrowerIntakeService:
             evidence.append(
                 EvidenceMetric(
                     name=name,
-                    value=_decimal(figure.value),
+                    value=_fact_value(name, figure.value),
                     unit=figure.unit or _default_unit(name),
                     period=figure.period or "latest reported period",
                     citation=figure.citation,
@@ -274,22 +290,26 @@ class BorrowerIntakeService:
         values = {item.name: item.value for item in evidence}
         return BorrowerApplication(
             application_id=metadata.application_id,
-            borrower_name=metadata.borrower_name,
-            industry=metadata.industry,
-            region=metadata.region,
+            borrower_name=_text(values, "borrower_name"),
+            industry=_text(values, "industry"),
+            sub_industry=_text(values, "sub_industry"),
+            region=_text(values, "region"),
+            loan_type=metadata.loan_type,
             profile=FinancialProfile(
-                annual_revenue_crore=values["annual_revenue_crore"],
+                annual_revenue_crore=_number(values, "annual_revenue_crore"),
                 requested_amount_crore=metadata.requested_amount_crore,
-                ebitda_margin_pct=values["ebitda_margin_pct"],
-                dscr=values["dscr"],
-                debt_to_ebitda=metadata.debt_to_ebitda,
-                collateral_cover=metadata.collateral_cover,
-                years_operating=metadata.years_operating,
-                employee_count=metadata.employee_count,
+                ebitda_margin_pct=_number(values, "ebitda_margin_pct"),
+                pat_crore=_number(values, "pat_crore"),
+                dscr=_number(values, "dscr"),
+                debt_to_equity=_number(values, "debt_to_equity"),
+                debt_to_ebitda=_number(values, "debt_to_ebitda"),
+                collateral_cover=_number(values, "collateral_cover"),
+                years_operating=_integer(values, "years_operating"),
+                employee_count=_integer(values, "employee_count"),
             ),
             evidence=tuple(evidence),
-            finance_context=metadata.finance_context,
-            operations_context=metadata.operations_context,
+            finance_context="Document-extracted financial facts with cited provenance.",
+            operations_context="Document-extracted operating facts with cited provenance.",
         )
 
     async def _ingest_with_activity(
@@ -346,6 +366,16 @@ def _select_figure(figures: tuple[ExtractedFigure, ...], metric: str) -> Extract
         "annual_revenue_crore": ("revenue", "income"),
         "ebitda_margin_pct": ("ebitda", "margin"),
         "dscr": ("dscr", "debt service"),
+        "pat_crore": ("pat", "profit after tax"),
+        "debt_to_equity": ("debt to equity", "debt/equity", "d/e"),
+        "debt_to_ebitda": ("debt to ebitda", "debt/ebitda"),
+        "collateral_cover": ("collateral", "security cover"),
+        "years_operating": ("years operating", "operating history", "incorporated"),
+        "employee_count": ("employee", "workforce", "headcount"),
+        "borrower_name": ("borrower", "company", "legal entity"),
+        "industry": ("industry", "sector"),
+        "sub_industry": ("sub-industry", "sub industry", "business activity"),
+        "region": ("region", "registered office", "location"),
     }[metric]
     for figure in figures:
         label = figure.label.casefold()
@@ -366,8 +396,50 @@ def _decimal(raw: str) -> Decimal:
         raise ValueError(f"extracted figure is not numeric: {raw!r}") from error
 
 
+def _fact_value(metric: str, raw: str) -> Decimal | str:
+    value = raw.strip()
+    if not value:
+        raise ValueError(f"FinDocIQ returned an empty {metric} value")
+    return value if metric in TEXT_FACTS else _decimal(value)
+
+
+def _number(values: dict[str, Decimal | str], name: str) -> Decimal:
+    value = values[name]
+    if not isinstance(value, Decimal):
+        raise ValueError(f"FinDocIQ returned non-numeric {name}")
+    return value
+
+
+def _integer(values: dict[str, Decimal | str], name: str) -> int:
+    value = _number(values, name)
+    if value != value.to_integral_value():
+        raise ValueError(f"FinDocIQ returned non-integral {name}")
+    return int(value)
+
+
+def _text(values: dict[str, Decimal | str], name: str) -> str:
+    value = values[name]
+    if not isinstance(value, str):
+        raise ValueError(f"FinDocIQ returned non-text {name}")
+    return value
+
+
 def _default_unit(metric: str) -> str:
-    return {"annual_revenue_crore": "INR crore", "ebitda_margin_pct": "%", "dscr": "x"}[metric]
+    return {
+        "annual_revenue_crore": "INR crore",
+        "ebitda_margin_pct": "%",
+        "dscr": "x",
+        "pat_crore": "INR crore",
+        "debt_to_equity": "x",
+        "debt_to_ebitda": "x",
+        "collateral_cover": "x",
+        "years_operating": "years",
+        "employee_count": "count",
+        "borrower_name": "text",
+        "industry": "text",
+        "sub_industry": "text",
+        "region": "text",
+    }[metric]
 
 
 async def _report(

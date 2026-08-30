@@ -178,6 +178,26 @@ class SuggestionAssembler:
                     "same region" if application.region == precedent.region else "different region"
                 ),
             ),
+            SimilarityFactor(
+                metric="sub_industry",
+                application_value=application.sub_industry,
+                precedent_value=precedent.sub_industry,
+                observation=(
+                    "same sub-industry"
+                    if application.sub_industry == precedent.sub_industry
+                    else "different sub-industry"
+                ),
+            ),
+            SimilarityFactor(
+                metric="loan_type",
+                application_value=application.loan_type.value,
+                precedent_value=precedent.loan_type,
+                observation=(
+                    "same loan type"
+                    if application.loan_type.value == precedent.loan_type
+                    else "different loan type"
+                ),
+            ),
             _numeric_factor(
                 "annual_revenue_crore",
                 current.annual_revenue_crore,
@@ -189,6 +209,10 @@ class SuggestionAssembler:
                 historical.requested_amount_crore,
             ),
             _numeric_factor("dscr", current.dscr, historical.dscr),
+            _numeric_factor("pat_crore", current.pat_crore, historical.pat_crore),
+            _numeric_factor(
+                "debt_to_equity", current.debt_to_equity, historical.debt_to_equity
+            ),
             _numeric_factor(
                 "debt_to_ebitda", current.debt_to_ebitda, historical.debt_to_ebitda
             ),

@@ -1,0 +1,1 @@
+Extract the borrower's most specific sub-industry from its stated products or business activity and return exact document, page, and bbox provenance.

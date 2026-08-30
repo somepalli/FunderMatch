@@ -1,0 +1,2 @@
+Extract profit after tax (PAT) in INR crore for the latest reported financial year.
+Preserve a loss as a negative value and return exact document, page, and bbox provenance.

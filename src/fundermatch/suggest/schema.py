@@ -32,7 +32,7 @@ class AdvisoryCandidate(BaseModel):
 
     funder_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
-    passed_checks: tuple[RuleCheck, ...] = Field(min_length=7, max_length=7)
+    passed_checks: tuple[RuleCheck, ...] = Field(min_length=8, max_length=8)
     precedents: tuple[ExplainedPrecedent, ...]
     evidence_summary: str = Field(min_length=1, max_length=2000)
     no_close_precedent: bool

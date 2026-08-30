@@ -17,7 +17,7 @@ from typing import TypeVar
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pydantic import BaseModel, ConfigDict, Field
 
-from fundermatch.intake import IntakeMetadata
+from fundermatch.intake import EXTRACTED_FACTS, IntakeMetadata
 from fundermatch.orchestration.schema import InputReference, WorkerName
 
 _Model = TypeVar("_Model", bound=BaseModel)
@@ -142,7 +142,7 @@ class ApplicationWorkspace:
         for current in ordered[ordered.index(worker) :]:
             self._artifact_path(application_id, current.value).unlink(missing_ok=True)
         if ordered.index(worker) <= ordered.index(WorkerName.FINANCIAL_ANALYSIS):
-            for metric in ("annual_revenue_crore", "ebitda_margin_pct", "dscr"):
+            for metric in EXTRACTED_FACTS:
                 self._artifact_path(application_id, f"financial/{metric}").unlink(missing_ok=True)
 
     def delete_application(self, application_id: str) -> bool:

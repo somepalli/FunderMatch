@@ -1,0 +1,1 @@
+Extract the latest reported employee or workforce count and return exact document, page, and bbox provenance.

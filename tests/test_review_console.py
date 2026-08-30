@@ -93,17 +93,8 @@ def test_pipeline_can_upload_real_pdf_boundary() -> None:
         )
     )
     metadata = {
-        "application_id": "APP-UPLOAD-1",
-        "borrower_name": "Borrower Ltd",
-        "industry": "Engineering",
-        "region": "South",
         "requested_amount_crore": "25",
-        "debt_to_ebitda": "2.5",
-        "collateral_cover": "1.2",
-        "years_operating": 9,
-        "employee_count": 100,
-        "finance_context": "Audited FY2025 statements supplied.",
-        "operations_context": "Operating plant is active.",
+        "loan_type": "term_loan",
     }
     response = client.post(
         "/v1/intake",
@@ -116,6 +107,33 @@ def test_pipeline_can_upload_real_pdf_boundary() -> None:
     assert intake.calls[0][1][0][0] == "borrower.pdf"
 
 
+def test_intake_rejects_manually_supplied_document_facts() -> None:
+    intake = FakeIntakeService()
+    client = TestClient(
+        create_app(
+            InMemoryWorkflowRepository(),
+            PipelineAuthenticator(),
+            intake_service=intake,  # type: ignore[arg-type]
+        )
+    )
+    response = client.post(
+        "/v1/intake",
+        data={
+            "metadata": __import__("json").dumps(
+                {
+                    "requested_amount_crore": "25",
+                    "loan_type": "term_loan",
+                    "industry": "Manually supplied industry",
+                }
+            )
+        },
+        files=[("files", ("borrower.pdf", b"%PDF-1.7 test", "application/pdf"))],
+        headers={"Authorization": "Bearer pipeline-token"},
+    )
+    assert response.status_code == 422
+    assert intake.calls == []
+
+
 def test_upload_boundary_accepts_more_than_ten_pdfs() -> None:
     intake = FakeIntakeService()
     client = TestClient(
@@ -126,17 +144,8 @@ def test_upload_boundary_accepts_more_than_ten_pdfs() -> None:
         )
     )
     metadata = {
-        "application_id": "APP-MANY-PDFS",
-        "borrower_name": "Borrower Ltd",
-        "industry": "Engineering",
-        "region": "South",
         "requested_amount_crore": "25",
-        "debt_to_ebitda": "2.5",
-        "collateral_cover": "1.2",
-        "years_operating": 9,
-        "employee_count": 100,
-        "finance_context": "Audited statements supplied.",
-        "operations_context": "Operating plant is active.",
+        "loan_type": "term_loan",
     }
     response = client.post(
         "/v1/intake",

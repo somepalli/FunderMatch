@@ -79,7 +79,7 @@ class WorkerContext:
 
     application_id: str
     command_id: UUID
-    max_tool_calls: int = 8
+    max_tool_calls: int = 13
     permitted_tools: frozenset[str] | None = None
     call_timeout_seconds: float | None = None
     _tool_calls: int = field(default=0, init=False, repr=False)
@@ -142,7 +142,7 @@ class ApplicationMemoryGraph:
         workers: tuple[ApplicationWorker, ...],
         checkpointer: BaseCheckpointSaver,
         lifecycle: MemoryLifecycleStore,
-        max_tool_calls: int = 8,
+        max_tool_calls: int = 13,
         recorder: AgentSpanRecorder | None = None,
         activity: Callable[..., Awaitable[None]] | None = None,
         execution_policies: dict[str, WorkerExecutionPolicy] | None = None,

@@ -321,7 +321,7 @@ function render() {
   const stateName = workflow.state || "UNKNOWN";
   elements.caseTitle.textContent = application?.borrower_name || workflow.application_id;
   elements.caseSubtitle.textContent = application
-    ? `${application.industry} · ${application.region} · Application ${workflow.application_id}`
+    ? `${application.industry} / ${application.sub_industry || "Unclassified"} · ${application.region} · Application ${workflow.application_id}`
     : `Application ${workflow.application_id} has no advisory bundle yet.`;
   elements.workflowState.textContent = titleCase(stateName);
   elements.workflowState.className = `state-badge ${stateClass(stateName)}`;
@@ -353,8 +353,11 @@ function renderBorrower(application) {
   const facts = [
     ["Annual revenue", `₹${formatNumber(profile.annual_revenue_crore)} cr`],
     ["Requested amount", `₹${formatNumber(profile.requested_amount_crore)} cr`],
+    ["Loan type", titleCase(application.loan_type || "term_loan")],
     ["EBITDA margin", formatNumber(profile.ebitda_margin_pct, "%")],
+    ["PAT", `₹${formatNumber(profile.pat_crore)} cr`],
     ["DSCR", formatNumber(profile.dscr, "×")],
+    ["Debt / equity", formatNumber(profile.debt_to_equity, "×")],
     ["Debt / EBITDA", formatNumber(profile.debt_to_ebitda, "×")],
     ["Collateral cover", formatNumber(profile.collateral_cover, "×")],
     ["Operating history", formatNumber(profile.years_operating, " years")],
@@ -693,11 +696,9 @@ elements.intakeForm.addEventListener("submit", async (event) => {
   const fields = new FormData(elements.intakeForm);
   const files = fields.getAll("files");
   const metadata = {};
-  for (const name of ["application_id", "borrower_name", "industry", "region", "requested_amount_crore", "debt_to_ebitda", "collateral_cover", "years_operating", "employee_count", "finance_context", "operations_context"]) {
+  for (const name of ["requested_amount_crore", "loan_type"]) {
     metadata[name] = fields.get(name);
   }
-  metadata.years_operating = Number(metadata.years_operating);
-  metadata.employee_count = Number(metadata.employee_count);
   const body = new FormData();
   body.append("metadata", JSON.stringify(metadata));
   files.forEach((file) => body.append("files", file));

@@ -4,12 +4,36 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
+from fundermatch.api.app import _mask_workflow
 from fundermatch.orchestration.workspace import ApplicationWorkspace
 from fundermatch.precedent.schema import PrecedentStatus
 from fundermatch.security.policy import ProductionGuardrailPolicy
 from fundermatch.security.receipts import ReceiptSigner
+from fundermatch.workflow.schema import WorkflowRecord
 
 ROOT = Path(__file__).parents[1]
+
+
+def test_normal_api_masking_covers_cited_legal_name() -> None:
+    record = WorkflowRecord(
+        application_id="APP-MASK-1",
+        suggestion={
+            "application": {
+                "borrower_name": "Borrower Private Limited",
+                "finance_context": "finance",
+                "operations_context": "operations",
+                "evidence": [
+                    {"name": "borrower_name", "value": "Borrower Private Limited"},
+                    {"name": "dscr", "value": "1.4"},
+                ],
+            }
+        },
+    )
+
+    application = _mask_workflow(record).suggestion["application"]
+    assert application["borrower_name"] == "[MASKED]"
+    assert application["evidence"][0]["value"] == "[MASKED]"
+    assert application["evidence"][1]["value"] == "1.4"
 
 
 class _SensitiveArtifact(BaseModel):
@@ -21,7 +45,7 @@ def test_production_policy_loads_worker_limits_and_stable_hash() -> None:
         ROOT / "configs/guardrails/production.yaml"
     )
     assert len(policy.policy_hash) == 64
-    assert policy.workers["financial_analysis"].max_calls == 3
+    assert policy.workers["financial_analysis"].max_calls == 13
     assert policy.workers["document_processing"].permitted_tools == (
         "findociq_ingest",
     )

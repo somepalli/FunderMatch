@@ -220,9 +220,13 @@ class PrecedentWritebackService:
                 f"{hashlib.sha256(application.application_id.encode()).hexdigest()[:12]}"
             ),
             industry=application.industry,
+            sub_industry=application.sub_industry,
             region=application.region,
+            loan_type=application.loan_type.value,
             profile=application.profile,
-            evidence=application.evidence,
+            evidence=tuple(
+                item for item in application.evidence if item.name != "borrower_name"
+            ),
             comments=comments,
             decision=HumanDecision(
                 outcome=outcome,

@@ -23,7 +23,7 @@ Phases 0–6 and the opt-in resilient agent supervisor are implemented:
 - pinned BGE-M3 vectorization for the real seed command;
 - fixtures for aligned precedent, similar-but-hard-rule-ineligible, and
   no-close-precedent scenarios.
-- typed YAML funder policies with seven independently reported hard checks;
+- typed YAML funder policies with eight independently reported hard checks;
 - deterministic eligibility evaluation before any vector query;
 - eligible-only Qdrant payload filtering across `profile_vec` and
   `comments_vec`;
@@ -175,7 +175,7 @@ finance/operations reviews plus the authoritative human outcome.
 
 Funder policies live in `configs/funder_policies.yaml` and are validated through
 Pydantic before use. The project deliberately uses a small typed Python rules
-engine instead of Drools: the current policy language is seven fixed membership
+engine instead of Drools: the current policy language is eight fixed membership
 or numeric comparisons, and adding a JVM would not improve expressiveness or
 auditability. Each comparison returns its actual value, requirement, and pass
 state.
@@ -356,9 +356,11 @@ The review console accepts any number of real borrower PDFs through **New borrow
 subject to 25 MB per file and 512 MB per batch. Files are
 stored outside Git, sent to FinDocIQ over its authenticated HTTP contract, indexed in
 Qdrant, and queried only within the uploaded document IDs. FinDocIQ extracts annual
-revenue, EBITDA margin, and DSCR with `(document_id, page, bbox)` citations. The form
-requires the remaining hard-rule inputs because the system never guesses eligibility
-facts.
+revenue, EBITDA margin, PAT, DSCR, debt-to-equity, debt-to-EBITDA, collateral cover,
+operating history, employee count, legal borrower name, industry, sub-industry, and
+region with `(document_id, page, bbox)` citations. The form accepts only requested loan
+amount and loan type; the server generates the application ID. Missing or conflicting
+document facts fail closed instead of falling back to user-entered values.
 
 An upload is sent as one ingestion batch. FinDocIQ sleeps local vLLM once, gives the
 GPU to Docling/OCR and BGE-M3 for the complete batch, releases those models, and wakes
@@ -484,7 +486,8 @@ Checkpoint state is a strict 256 KiB allow-list of IDs, SHA-256 hashes, cited
 findings, eligibility outcomes, guardrail results, stable command IDs, and write
 receipts. PDFs, base64 payloads, document chunks, prompts, raw model responses, and
 ReAct message histories cannot be serialized into it. Worker scratch state is
-ephemeral and defaults to an eight-tool-call budget.
+ephemeral and defaults to a thirteen-tool-call budget, one bounded and checkpointed
+call for each required document-derived borrower fact.
 
 Run the additional migration once before enabling the supervisor:
 
@@ -510,8 +513,8 @@ Document processing -> Financial metric extraction -> Deterministic eligibility
 -> Deterministic guardrails -> Human-review handoff
 ```
 
-Revenue, EBITDA margin, and DSCR have separate durable substep artifacts. A retry
-therefore resumes the missing metric without repeating completed FinDocIQ calls.
+All thirteen required borrower facts have separate durable substep artifacts. A retry
+therefore resumes the missing fact without repeating completed FinDocIQ calls.
 Reviewer send-back can select an exact worker; `supervisor` uses pinned Gemma 3 at
 temperature 0 and stops at `needs_attention` when its route is ambiguous. Eligibility
 and guardrails can never be skipped. Approve, reject, and approve-with-conditions

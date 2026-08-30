@@ -1,0 +1,1 @@
+Extract the Indian operating region (North, South, East, West, or Central) from the registered or principal operating location and return exact document, page, and bbox provenance.

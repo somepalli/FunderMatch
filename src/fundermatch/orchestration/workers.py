@@ -18,7 +18,16 @@ from fundermatch.clients.findociq_contract import (
     IngestDocumentRequest,
     ProductionExtractRequest,
 )
-from fundermatch.intake import IntakeDocument, _decimal, _default_unit, _select_figure
+from fundermatch.intake import (
+    EXTRACTED_FACTS,
+    IntakeDocument,
+    _default_unit,
+    _fact_value,
+    _integer,
+    _number,
+    _select_figure,
+    _text,
+)
 from fundermatch.matching.retriever import RuleGatedPrecedentRetriever
 from fundermatch.matching.schema import RuleGatedRetrievalResult
 from fundermatch.orchestration.graph import WorkerContext, WorkerFailure
@@ -243,7 +252,7 @@ class DocumentProcessingWorker(_Worker):
 
 class FinancialMetricExtractionWorker(_Worker):
     name = WorkerName.FINANCIAL_ANALYSIS
-    metrics = ("annual_revenue_crore", "ebitda_margin_pct", "dscr")
+    metrics = EXTRACTED_FACTS
 
     async def run(self, state: ApplicationMemoryState, context: WorkerContext) -> WorkerResult:
         request = self.d.workspace.request(state.application_id)
@@ -283,9 +292,16 @@ class FinancialMetricExtractionWorker(_Worker):
                         "findociq_extract_unavailable",
                         f"FinDocIQ extraction is temporarily unavailable for {metric}",
                     ) from error
-                metric_artifact = MetricArtifact(
-                    metric=metric, figure=_select_figure(response.figures, metric)
-                )
+                try:
+                    selected = _select_figure(response.figures, metric)
+                except ValueError as error:
+                    raise WorkerFailure(
+                        "required_document_fact_missing",
+                        f"Required document fact is missing or ambiguous: {metric}",
+                        retryable=False,
+                        needs_attention=True,
+                    ) from error
+                metric_artifact = MetricArtifact(metric=metric, figure=selected)
                 if bool(getattr(self.d.findociq, "production_enabled", False)) and (
                     response.application_id != state.application_id
                     or response.command_id != f"{context.command_id}:{metric}"
@@ -304,36 +320,56 @@ class FinancialMetricExtractionWorker(_Worker):
                     "FinDocIQ returned evidence outside the current application",
                     retryable=False,
                 )
-            evidence.append(
-                EvidenceMetric(
-                    name=metric,
-                    value=_decimal(figure.value),
-                    unit=figure.unit or _default_unit(metric),
-                    period=figure.period or "latest reported period",
-                    citation=figure.citation,
+            try:
+                evidence.append(
+                    EvidenceMetric(
+                        name=metric,
+                        value=_fact_value(metric, figure.value),
+                        unit=figure.unit or _default_unit(metric),
+                        period=figure.period or "latest reported period",
+                        citation=figure.citation,
+                    )
                 )
-            )
+            except ValueError as error:
+                raise WorkerFailure(
+                    "required_document_fact_invalid",
+                    f"Required document fact is invalid: {metric}",
+                    retryable=False,
+                    needs_attention=True,
+                ) from error
         values = {item.name: item.value for item in evidence}
         metadata = request.metadata
-        application = BorrowerApplication(
-            application_id=state.application_id,
-            borrower_name=metadata.borrower_name,
-            industry=metadata.industry,
-            region=metadata.region,
-            profile=FinancialProfile(
-                annual_revenue_crore=values["annual_revenue_crore"],
-                requested_amount_crore=metadata.requested_amount_crore,
-                ebitda_margin_pct=values["ebitda_margin_pct"],
-                dscr=values["dscr"],
-                debt_to_ebitda=metadata.debt_to_ebitda,
-                collateral_cover=metadata.collateral_cover,
-                years_operating=metadata.years_operating,
-                employee_count=metadata.employee_count,
-            ),
-            evidence=tuple(evidence),
-            finance_context=metadata.finance_context,
-            operations_context=metadata.operations_context,
-        )
+        try:
+            application = BorrowerApplication(
+                application_id=state.application_id,
+                borrower_name=_text(values, "borrower_name"),
+                industry=_text(values, "industry"),
+                sub_industry=_text(values, "sub_industry"),
+                region=_text(values, "region"),
+                loan_type=metadata.loan_type,
+                profile=FinancialProfile(
+                    annual_revenue_crore=_number(values, "annual_revenue_crore"),
+                    requested_amount_crore=metadata.requested_amount_crore,
+                    ebitda_margin_pct=_number(values, "ebitda_margin_pct"),
+                    pat_crore=_number(values, "pat_crore"),
+                    dscr=_number(values, "dscr"),
+                    debt_to_equity=_number(values, "debt_to_equity"),
+                    debt_to_ebitda=_number(values, "debt_to_ebitda"),
+                    collateral_cover=_number(values, "collateral_cover"),
+                    years_operating=_integer(values, "years_operating"),
+                    employee_count=_integer(values, "employee_count"),
+                ),
+                evidence=tuple(evidence),
+                finance_context="Document-extracted financial facts with cited provenance.",
+                operations_context="Document-extracted operating facts with cited provenance.",
+            )
+        except ValueError as error:
+            raise WorkerFailure(
+                "required_document_profile_invalid",
+                "Required document facts could not form a valid borrower profile",
+                retryable=False,
+                needs_attention=True,
+            ) from error
         digest = self.d.workspace.save(state.application_id, self.name.value, application)
         workflow = await _advance(self.d, state.application_id, WorkflowState.EXTRACTED, context)
         refs = tuple(_evidence_reference(item) for item in evidence)

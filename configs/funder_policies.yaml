@@ -7,6 +7,7 @@ policies:
       - Healthcare services
       - Renewable components
     allowed_regions: [North, South, West]
+    allowed_loan_types: [term_loan, working_capital, equipment_finance]
     min_requested_amount_crore: 10
     max_requested_amount_crore: 40
     min_dscr: 1.20
@@ -24,6 +25,7 @@ policies:
       - Industrial machinery
       - Packaging
     allowed_regions: [Central, North, South, West]
+    allowed_loan_types: [term_loan, working_capital, equipment_finance, invoice_finance, loan_against_property]
     min_requested_amount_crore: 15
     max_requested_amount_crore: 90
     min_dscr: 1.10
@@ -40,6 +42,7 @@ policies:
       - Medical devices
       - Textiles
     allowed_regions: [East, North, West]
+    allowed_loan_types: [term_loan, working_capital, invoice_finance]
     min_requested_amount_crore: 15
     max_requested_amount_crore: 75
     min_dscr: 1.00
@@ -56,6 +59,7 @@ policies:
       - Paper products
       - Specialty glass
     allowed_regions: [Central, East, North, South, West]
+    allowed_loan_types: [term_loan, equipment_finance, loan_against_property]
     min_requested_amount_crore: 20
     max_requested_amount_crore: 100
     min_dscr: 1.05

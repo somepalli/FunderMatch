@@ -282,7 +282,7 @@ button { cursor: pointer; }
 .dialog-copy { margin: 0; color: var(--muted); font-size: .75rem; line-height: 1.45; }
 .intake-dialog { width: min(760px, calc(100% - 2rem)); }
 .intake-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0 .75rem; }
-.dialog input { width: 100%; padding: .62rem .7rem; border: 1px solid #cbd8d5; border-radius: 8px; }
+.dialog input, .dialog select { width: 100%; padding: .62rem .7rem; border: 1px solid #cbd8d5; border-radius: 8px; background: white; }
 .intake-error { color: var(--red); }
 .intake-activity { margin-top: .9rem; padding: .85rem; background: #f5f9f8; border: 1px solid var(--line); border-radius: 10px; }
 .activity-summary { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }

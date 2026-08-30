@@ -83,10 +83,16 @@ def test_bundle_is_advisory_only_and_preserves_click_to_source_evidence(
     northstar = next(
         candidate for candidate in bundle.candidates if candidate.funder_id == "northstar-capital"
     )
-    assert len(northstar.passed_checks) == 7
+    assert len(northstar.passed_checks) == 8
     assert northstar.precedents[0].match.precedent.comments
     assert northstar.precedents[0].match.precedent.evidence[0].citation.bbox.x0 >= 0
-    assert len(northstar.precedents[0].factors) == 7
+    assert len(northstar.precedents[0].factors) == 11
+    assert {factor.metric for factor in northstar.precedents[0].factors} >= {
+        "sub_industry",
+        "loan_type",
+        "pat_crore",
+        "debt_to_equity",
+    }
 
 
 def test_no_close_precedent_is_visible_without_inventing_evidence(

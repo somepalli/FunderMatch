@@ -13,11 +13,21 @@ from fundermatch.precedent.schema import EvidenceMetric, FinancialProfile
 class RuleCriterion(StrEnum):
     INDUSTRY = "industry"
     REGION = "region"
+    LOAN_TYPE = "loan_type"
     REQUESTED_AMOUNT = "requested_amount_crore"
     DSCR = "dscr"
     DEBT_TO_EBITDA = "debt_to_ebitda"
     COLLATERAL_COVER = "collateral_cover"
     OPERATING_HISTORY = "years_operating"
+
+
+class LoanType(StrEnum):
+    TERM_LOAN = "term_loan"
+    WORKING_CAPITAL = "working_capital"
+    EQUIPMENT_FINANCE = "equipment_finance"
+    INVOICE_FINANCE = "invoice_finance"
+    LOAN_AGAINST_PROPERTY = "loan_against_property"
+    OTHER = "other"
 
 
 class BorrowerApplication(BaseModel):
@@ -26,9 +36,11 @@ class BorrowerApplication(BaseModel):
     application_id: str = Field(min_length=1)
     borrower_name: str = Field(min_length=1)
     industry: str = Field(min_length=1)
+    sub_industry: str = Field(default="Unclassified", min_length=1)
     region: str = Field(min_length=1)
+    loan_type: LoanType = LoanType.TERM_LOAN
     profile: FinancialProfile
-    evidence: tuple[EvidenceMetric, ...] = Field(min_length=3, max_length=3)
+    evidence: tuple[EvidenceMetric, ...] = Field(min_length=3, max_length=20)
     finance_context: str = Field(min_length=1, max_length=2000)
     operations_context: str = Field(min_length=1, max_length=2000)
 
@@ -39,18 +51,34 @@ class BorrowerApplication(BaseModel):
             "annual_revenue_crore": self.profile.annual_revenue_crore,
             "ebitda_margin_pct": self.profile.ebitda_margin_pct,
             "dscr": self.profile.dscr,
+            "pat_crore": self.profile.pat_crore,
+            "debt_to_equity": self.profile.debt_to_equity,
+            "debt_to_ebitda": self.profile.debt_to_ebitda,
+            "collateral_cover": self.profile.collateral_cover,
+            "years_operating": Decimal(self.profile.years_operating),
+            "employee_count": Decimal(self.profile.employee_count),
+            "borrower_name": self.borrower_name,
+            "industry": self.industry,
+            "sub_industry": self.sub_industry,
+            "region": self.region,
         }
-        if metrics != expected:
+        required = {"annual_revenue_crore", "ebitda_margin_pct", "dscr"}
+        if not required <= metrics.keys() or any(
+            expected[name] != value for name, value in metrics.items()
+        ):
             raise ValueError("application evidence must match its normalized profile")
         return self
 
     def profile_text(self) -> str:
         profile = self.profile
         return (
-            f"Industry: {self.industry}. Region: {self.region}. "
+            f"Industry: {self.industry}. Sub-industry: {self.sub_industry}. "
+            f"Region: {self.region}. Loan type: {self.loan_type.value}. "
             f"Revenue INR {profile.annual_revenue_crore} crore. "
             f"Requested amount INR {profile.requested_amount_crore} crore. "
-            f"EBITDA margin {profile.ebitda_margin_pct} percent. DSCR {profile.dscr}. "
+            f"EBITDA margin {profile.ebitda_margin_pct} percent. "
+            f"PAT INR {profile.pat_crore} crore. DSCR {profile.dscr}. "
+            f"Debt to equity {profile.debt_to_equity}. "
             f"Debt to EBITDA {profile.debt_to_ebitda}. "
             f"Collateral cover {profile.collateral_cover}. "
             f"Operating history {profile.years_operating} years."
@@ -70,6 +98,7 @@ class FunderPolicy(BaseModel):
     display_name: str = Field(min_length=1)
     allowed_industries: frozenset[str] = Field(min_length=1)
     allowed_regions: frozenset[str] = Field(min_length=1)
+    allowed_loan_types: frozenset[LoanType] = Field(min_length=1)
     min_requested_amount_crore: Decimal = Field(ge=0)
     max_requested_amount_crore: Decimal = Field(gt=0)
     min_dscr: Decimal = Field(gt=0)
@@ -111,4 +140,4 @@ class FunderEligibility(BaseModel):
 
     funder_id: str
     eligible: bool
-    checks: tuple[RuleCheck, ...] = Field(min_length=7, max_length=7)
+    checks: tuple[RuleCheck, ...] = Field(min_length=8, max_length=8)
