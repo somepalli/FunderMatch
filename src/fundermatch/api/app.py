@@ -240,6 +240,16 @@ def create_app(
                         if production_guardrails
                         else None
                     ),
+                    service_jwt_issuer=(
+                        guardrail_policy.service_auth.issuer
+                        if guardrail_policy
+                        else "fundermatch"
+                    ),
+                    service_jwt_audience=(
+                        guardrail_policy.service_auth.audience
+                        if guardrail_policy
+                        else "findociq-api"
+                    ),
                     guardrail_policy_hash=(
                         guardrail_policy.policy_hash if guardrail_policy else None
                     ),

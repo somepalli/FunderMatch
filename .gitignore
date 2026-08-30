@@ -7,3 +7,5 @@ __pycache__/
 *.py[cod]
 *.log
 .env
+.artifacts/
+secrets/

@@ -425,6 +425,38 @@ docker compose -f docker-compose.production.yml config
 docker compose -f docker-compose.production.yml up --build
 ```
 
+### Service identity provisioning and rotation
+
+The integrated Compose deployment mounts one `secrets/service_jwt.txt` file into both
+FunderMatch and FinDocIQ, so its signing key cannot drift. For independently deployed
+services, provision two deployment-specific copies from one operation and transfer each
+copy through the deployment's secret manager. The command prints only a SHA-256
+fingerprint, never the secret:
+
+```powershell
+fundermatch-service-identity provision `
+  --fundermatch-secret .artifacts/identity-v1/fundermatch/service_jwt.txt `
+  --findociq-secret .artifacts/identity-v1/findociq/service_jwt.txt
+```
+
+Before startup, verify the installed copies and both reviewed policy bundles. Save the
+content-safe receipt with the release evidence:
+
+```powershell
+fundermatch-service-identity verify `
+  --fundermatch-secret <FunderMatch-mounted-secret> `
+  --findociq-secret <FinDocIQ-mounted-secret> `
+  --findociq-policy <FinDocIQ-repo>/configs/guardrails/production.yaml `
+  --receipt .artifacts/release/service-identity.json
+```
+
+For rotation, run `provision` with a new versioned destination such as `identity-v2`;
+the command refuses to overwrite either old key. During an offline maintenance window,
+install both new copies, restart FinDocIQ and FunderMatch together, run `verify`, then
+perform an authenticated readiness/extraction smoke test. Roll back both mounts together
+if verification fails. Never rotate only one deployment or pass a secret as a command-line
+argument.
+
 Suspicious PDFs are blocked and retained only as encrypted quarantine objects. Clean
 documents must return scan, DLP, encrypted-storage, and ownership receipt hashes before
 the document worker can checkpoint. Prompt-like document instructions stop at

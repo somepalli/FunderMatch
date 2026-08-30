@@ -69,3 +69,7 @@ jobs:
         run: >-
           uv run python scripts/validate_findociq_contract.py
           --contract external/findociq/contracts/findociq-public-http-contract.json
+      - name: Validate shared production service identity policy
+        run: >-
+          uv run fundermatch-service-identity verify-policy
+          --findociq-policy external/findociq/configs/guardrails/production.yaml
