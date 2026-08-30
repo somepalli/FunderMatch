@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -203,6 +204,7 @@ def main() -> None:
     ]
     report = {
         "n": len(release_cases),
+        "eval_dataset_sha256": hashlib.sha256(args.dataset.read_bytes()).hexdigest(),
         "retrieval_n": metrics.n,
         "environment": _environment(),
         "eligibility_failures": eligibility_failures,

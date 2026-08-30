@@ -46,7 +46,7 @@ services:
 
   findociq:
     build:
-      context: ../FinDocs_Analysi_Evals
+      context: ${FINDOCIQ_REPO_PATH:-../FinDocs_Analysis_Evals}
     environment:
       FINDOCIQ_PRODUCTION_GUARDRAILS_ENABLED: "true"
       FINDOCIQ_DATABASE_URL_FILE: /run/secrets/database_url

@@ -45,7 +45,7 @@ class FinDocIQUnavailable(RuntimeError):
 
 
 class FinDocIQContractError(RuntimeError):
-    """Raised when FinDocIQ returns a payload outside contract version 1.0."""
+    """Raised when FinDocIQ returns a payload outside supported v1.0/v2.0 contracts."""
 
 
 class FinDocIQClient:

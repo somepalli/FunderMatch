@@ -45,6 +45,12 @@ class AgentSpan(BaseModel):
     status: GraphStatus
     model_revision: str | None = None
     config_hash: str | None = None
+    prompt_template_id: str | None = Field(
+        default=None, pattern=r"^[a-z0-9][a-z0-9_.-]{0,119}$"
+    )
+    prompt_version: str | None = Field(default=None, pattern=r"^[0-9a-f]{12}$")
+    prompt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    eval_dataset_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     document_count: int = Field(default=0, ge=0)
     evidence_count: int = Field(default=0, ge=0)
     candidate_count: int = Field(default=0, ge=0)

@@ -118,7 +118,7 @@ uv run ruff check .
 
 ## FinDocIQ boundary
 
-FunderMatch sends:
+In the development profile, FunderMatch sends:
 
 ```json
 {
@@ -127,9 +127,17 @@ FunderMatch sends:
 }
 ```
 
-to `POST /extract`. It accepts only contract version `1.0`, with one or more
-figures carrying full source provenance. FunderMatch does not install or import
-the `findociq` package.
+to `POST /extract` and accepts contract version `1.0`. In the production profile,
+the same endpoint uses contract version `2.0` with an application-scoped service
+JWT and allow-listed `metric_ids` instead of a free-text question. Both versions
+return one or more figures carrying full source provenance. FunderMatch does not
+install or import the `findociq` package.
+
+FinDocIQ commits a generated public contract bundle at
+`contracts/findociq-public-http-contract.json`. FunderMatch validates every mirrored
+v1/v2 request and response model against that producer-owned bundle in CI. FinDocIQ's
+CI also checks the current FunderMatch consumer, so producer-side schema drift fails
+before release without introducing a Python package dependency between the services.
 
 With FinDocIQ running locally:
 
@@ -408,6 +416,9 @@ pinned BGE-M3/reranker snapshots under `models/findociq` using the paths documen
 FinDocIQ's index config. Create the secret files named by
 `docker-compose.production.yml`; `document_master_key.b64` must decode to exactly 32
 bytes, and `database_url.txt` must use the password in `postgres_password.txt`.
+Fresh clones use the canonical sibling directory `../FinDocs_Analysis_Evals`. Existing
+local clones that still use the former typo can set
+`FINDOCIQ_REPO_PATH=../FinDocs_Analysi_Evals` without changing the Compose file.
 
 ```powershell
 docker compose -f docker-compose.production.yml config
@@ -496,6 +507,12 @@ names, financial values, PDFs, extracted text, prompts, answers, credentials, ra
 exceptions, or checkpoint state. Langfuse failure is warning-only and cannot stop the
 workflow. `/ready` reports PostgreSQL, Qdrant, FinDocIQ, vLLM, and Langfuse separately;
 only Langfuse is non-blocking.
+
+Prompt attribution is content-safe: supervisor and generation records contain a
+template ID, content-derived version, prompt SHA-256, pinned model revision, and a
+configuration hash that incorporates the prompt hash. Rendered prompt bodies and model
+responses remain excluded. Controlled evaluation reports carry the held-out dataset
+SHA-256, allowing scores to be tied to an exact dataset and prompt/configuration version.
 
 The held-out release dataset is `evals/datasets/agent_release_cases.jsonl` with `n=24`
 invented applications: 8 eligible/aligned, 8 hard-rule boundary or ineligible, 4 with

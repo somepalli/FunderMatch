@@ -6,14 +6,14 @@ Changes to this file are API-contract changes and require contract tests.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BoundingBox(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
     x0: float
     y0: float
@@ -28,18 +28,18 @@ class BoundingBox(BaseModel):
 
 
 class SourceCitation(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
-    document_id: str = Field(min_length=1)
+    document_id: str
     page_number: int = Field(ge=1)
     bbox: BoundingBox
 
 
 class ExtractedFigure(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
-    label: str = Field(min_length=1)
-    value: str = Field(min_length=1)
+    label: str
+    value: str
     unit: str | None = None
     period: str | None = None
     citation: SourceCitation
@@ -64,27 +64,35 @@ class ProductionExtractRequest(BaseModel):
 
 
 class IngestDocumentRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     contract_version: Literal["1.0", "2.0"] = "1.0"
-    filename: str
+    filename: str = Field(min_length=5, max_length=240, pattern=r"^[^/\\]+\.[Pp][Dd][Ff]$")
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    content_base64: str
-    application_id: str | None = None
-    command_id: str | None = None
+    content_base64: str = Field(min_length=8)
+    application_id: str | None = Field(default=None, min_length=3, max_length=200)
+    command_id: str | None = Field(default=None, min_length=8, max_length=200)
     policy_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def require_v2_scope(self) -> IngestDocumentRequest:
+        if self.contract_version == "2.0" and not all(
+            (self.application_id, self.command_id, self.policy_hash)
+        ):
+            raise ValueError("v2 ingestion requires application_id, command_id, and policy_hash")
+        return self
 
 
 class IngestDocumentResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
-    contract_version: Literal["1.0", "2.0"]
+    contract_version: Literal["1.0", "2.0"] = "1.0"
     document_id: str
     filename: str
     sha256: str
-    page_count: int
-    chunk_count: int
-    chunk_ids: tuple[str, ...]
+    page_count: int = Field(ge=1)
+    chunk_count: int = Field(ge=1)
+    chunk_ids: tuple[str, ...] = Field(min_length=1)
     config_hash: str
     application_id: str | None = None
     policy_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
@@ -104,31 +112,41 @@ class IngestBatchRequest(BaseModel):
     )
     documents: tuple[IngestDocumentRequest, ...] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def consistent_contract(self) -> IngestBatchRequest:
+        if any(item.contract_version != self.contract_version for item in self.documents):
+            raise ValueError("batch and document contract versions must match")
+        if self.contract_version == "2.0":
+            applications = {item.application_id for item in self.documents}
+            if len(applications) != 1:
+                raise ValueError("production batch must belong to one application")
+        return self
+
 
 class IngestBatchResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
-    contract_version: Literal["1.0", "2.0"]
+    contract_version: Literal["1.0", "2.0"] = "1.0"
     documents: tuple[IngestDocumentResponse, ...] = Field(min_length=1)
 
 
 class IngestionActivityEvent(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
     sequence: int = Field(ge=1)
     batch_id: str
     stage: str
     message: str
-    occurred_at: datetime
+    occurred_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     document_name: str | None = None
-    document_index: int | None = None
-    document_count: int | None = None
-    completed: int | None = None
-    total: int | None = None
+    document_index: int | None = Field(default=None, ge=1)
+    document_count: int | None = Field(default=None, ge=1)
+    completed: int | None = Field(default=None, ge=0)
+    total: int | None = Field(default=None, ge=1)
 
 
 class IngestionActivityResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
     batch_id: str
     status: Literal["pending", "running", "completed", "failed"]
@@ -137,10 +155,10 @@ class IngestionActivityResponse(BaseModel):
 
 
 class ExtractResponse(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    model_config = ConfigDict(frozen=True)
 
-    contract_version: Literal["1.0", "2.0"]
-    question: str = Field(min_length=1)
+    contract_version: Literal["1.0", "2.0"] = "1.0"
+    question: str
     figures: tuple[ExtractedFigure, ...] = Field(min_length=1)
     notes: tuple[str, ...] = ()
     application_id: str | None = None

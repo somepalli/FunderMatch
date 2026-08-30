@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable
 from datetime import datetime
-from hashlib import sha256
 from time import perf_counter
 from typing import Protocol
 from uuid import uuid4
@@ -18,6 +17,7 @@ from fundermatch.orchestration.graph import ApplicationMemoryGraph
 from fundermatch.orchestration.observability import AgentSpan
 from fundermatch.orchestration.schema import ApplicationMemoryState, GraphStatus, WorkerName
 from fundermatch.orchestration.workspace import ApplicationWorkspace
+from fundermatch.prompts import identify_prompt, prompt_config_hash
 
 
 class SendBackRouter(Protocol):
@@ -163,9 +163,12 @@ class AgentIntakeRuntime:
         state = await self.graph.state(application_id)
         config = getattr(self.sendback_router, "config", None)
         config_hash = None
+        prompt_identity = None
         if config is not None:
-            canonical = config.model_dump_json(exclude={"prompt_path"})
-            config_hash = sha256(canonical.encode("utf-8")).hexdigest()
+            prompt_path = getattr(config, "prompt_path", None)
+            if prompt_path is not None:
+                prompt_identity = identify_prompt(prompt_path)
+                config_hash = prompt_config_hash(config, prompt_identity)
         await self.graph.recorder.record(
             AgentSpan(
                 application_id=application_id,
@@ -178,6 +181,11 @@ class AgentIntakeRuntime:
                 status=(GraphStatus.NEEDS_ATTENTION if route is None else GraphStatus.RUNNING),
                 model_revision=getattr(config, "revision", None),
                 config_hash=config_hash,
+                prompt_template_id=(
+                    prompt_identity.template_id if prompt_identity is not None else None
+                ),
+                prompt_version=(prompt_identity.version if prompt_identity is not None else None),
+                prompt_sha256=(prompt_identity.sha256 if prompt_identity is not None else None),
                 document_count=len(state.documents),
                 evidence_count=len(state.evidence),
                 candidate_count=sum(item.eligible for item in state.eligibility),

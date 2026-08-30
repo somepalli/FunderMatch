@@ -10,6 +10,7 @@ from typing import Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from fundermatch.prompts import PromptIdentity, identify_prompt, prompt_config_hash
 from fundermatch.suggest.schema import AdvisoryCandidate
 
 PROHIBITED_AUTHORITY = re.compile(
@@ -114,6 +115,10 @@ class NarrativeRun(BaseModel):
     revision: str
     temperature: Literal[0.0]
     seed: int
+    prompt_template_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_.-]{0,119}$")
+    prompt_version: str = Field(pattern=r"^[0-9a-f]{12}$")
+    prompt_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    config_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     output: GeneratedNarrative
 
 
@@ -133,6 +138,7 @@ class GemmaNarrativeClient:
 
     async def explain(self, candidate: AdvisoryCandidate) -> NarrativeRun:
         system_prompt = self.config.prompt_path.read_text(encoding="utf-8").strip()
+        identity = identify_prompt(self.config.prompt_path)
         facts = NarrativeFacts.from_candidate(candidate)
         payload = {
             "model": self.config.model_id,
@@ -169,13 +175,17 @@ class GemmaNarrativeClient:
             self._validate_grounded(output, facts)
         except (httpx.HTTPError, KeyError, TypeError, ValueError, ValidationError) as error:
             if self.config.production_guardrails_enabled:
-                return self._fallback(facts)
+                return self._fallback(facts, identity)
             raise NarrativeUnavailable("Gemma narrative generation failed") from error
         return NarrativeRun(
             model_id=self.config.model_id,
             revision=self.config.revision,
             temperature=self.config.temperature,
             seed=self.config.seed,
+            prompt_template_id=identity.template_id,
+            prompt_version=identity.version,
+            prompt_sha256=identity.sha256,
+            config_hash=prompt_config_hash(self.config, identity),
             output=output,
         )
 
@@ -195,7 +205,7 @@ class GemmaNarrativeClient:
         if "human" not in output.caveat.casefold():
             raise ValueError("narrative omitted human-decision authority")
 
-    def _fallback(self, facts: NarrativeFacts) -> NarrativeRun:
+    def _fallback(self, facts: NarrativeFacts, identity: PromptIdentity) -> NarrativeRun:
         precedent_state = (
             "Verified historical precedents are available for reviewer comparison."
             if facts.precedents
@@ -206,6 +216,10 @@ class GemmaNarrativeClient:
             revision="guardrail-fallback-v1",
             temperature=0.0,
             seed=self.config.seed,
+            prompt_template_id=identity.template_id,
+            prompt_version=identity.version,
+            prompt_sha256=identity.sha256,
+            config_hash=prompt_config_hash(self.config, identity),
             output=GeneratedNarrative(
                 summary=f"{facts.display_name} passed the configured deterministic checks.",
                 similarities=(precedent_state,),

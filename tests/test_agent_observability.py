@@ -24,6 +24,8 @@ from fundermatch.orchestration.schema import (
     WorkerResult,
     result_hash,
 )
+from fundermatch.orchestration.supervisor import SupervisorRoutingConfig
+from fundermatch.prompts import identify_prompt, prompt_config_hash
 
 
 @dataclass
@@ -76,7 +78,40 @@ def test_every_worker_and_supervisor_emit_content_safe_spans(tmp_path) -> None: 
             payload = json.loads(line)
             assert_trace_is_content_safe(payload)
             serialized = line.casefold()
-            for forbidden in ("borrower_name", "prompt", "checkpoint_state"):
+            for forbidden in (
+                "borrower_name",
+                "prompt_body",
+                "messages",
+                "checkpoint_state",
+            ):
                 assert forbidden not in serialized
 
     asyncio.run(scenario())
+
+
+def test_prompt_identity_is_content_safe_and_config_bound(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    prompt_path = tmp_path / "sendback_supervisor_system.txt"
+    prompt_path.write_text("Return only the typed routing result.", encoding="utf-8")
+    config = SupervisorRoutingConfig(prompt_path=prompt_path)
+    identity = identify_prompt(prompt_path)
+    event = AgentSpan(
+        application_id="APP-PROMPT-001",
+        run_id="run-1",
+        thread_id="APP-PROMPT-001",
+        attempt=1,
+        latency_ms=1,
+        status=GraphStatus.RUNNING,
+        config_hash=prompt_config_hash(config, identity),
+        prompt_template_id=identity.template_id,
+        prompt_version=identity.version,
+        prompt_sha256=identity.sha256,
+        event="supervisor_route",
+    )
+    serialized = event.model_dump_json()
+    assert identity.version == identity.sha256[:12]
+    assert "Return only the typed routing result." not in serialized
+
+    prompt_path.write_text("Return a revised typed routing result.", encoding="utf-8")
+    revised = identify_prompt(prompt_path)
+    assert revised.sha256 != identity.sha256
+    assert prompt_config_hash(config, revised) != event.config_hash

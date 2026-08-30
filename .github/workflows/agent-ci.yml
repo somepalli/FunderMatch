@@ -14,7 +14,11 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run ruff check src tests
+      - name: Validate production Compose syntax and trust boundaries
+        run: |
+          docker compose -f docker-compose.production.yml config --quiet
+          uv run python scripts/validate_production_topology.py
+      - run: uv run ruff check src tests scripts
       - name: Unit, guardrail, memory, recovery, and trace-leak gates
         run: uv run pytest -q
 
@@ -47,3 +51,21 @@ jobs:
         run: >-
           uv run pytest -q tests/test_agent_postgres_integration.py
           tests/test_agent_memory.py tests/test_intake_jobs.py
+
+  findociq-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --extra dev
+      - name: Checkout FinDocIQ public producer contract
+        uses: actions/checkout@v4
+        with:
+          repository: somepalli/FinDocs_Analysis_Evals
+          path: external/findociq
+      - name: Validate development v1 and production v2 compatibility
+        run: >-
+          uv run python scripts/validate_findociq_contract.py
+          --contract external/findociq/contracts/findociq-public-http-contract.json

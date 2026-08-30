@@ -27,8 +27,9 @@ assembly as deterministic, linear Python. LangGraph may coordinate these modules
 as bounded workers, but it must not move financial logic into graph routes or
 make eligibility or lending decisions.
 
-Use an explicit Postgres state machine for the small HITL branch set unless its
-complexity grows enough to justify LangGraph:
+Use the explicit Postgres state machine as the authoritative business workflow.
+LangGraph is the durable, checkpointed orchestration layer around the fixed worker
+sequence; it does not replace workflow authority:
 
 ```text
 INTAKE -> EXTRACTED -> RULE_GATED -> AI_SUGGESTED -> AWAITING_HUMAN
@@ -64,6 +65,22 @@ Work in order and do not begin a phase until the prior phase's tests pass:
 4. Durable HITL state machine and audit
 5. Precedent write-back loop
 6. Three-panel UI
+7. Durable LangGraph supervisor/workers, recovery, guardrails, and observability
+8. Production security, cross-repository contracts, retention, and release qualification
+
+## Production integration
+
+- Development contract `1.0` permits a free-text extraction question; production
+  contract `2.0` requires application scope, allow-listed metric IDs, service JWTs,
+  correlation IDs, and verified security receipts.
+- Keep the local Pydantic consumer copy synchronized through the generated FinDocIQ
+  public contract bundle and the bidirectional GitHub Actions compatibility gate.
+- The integrated production Compose file is authoritative for local production:
+  only Caddy publishes a host port; FinDocIQ, PostgreSQL, Qdrant, ClamAV, and vLLM
+  remain on internal networks.
+- LangGraph routes only operational status. Financial extraction, eligibility,
+  suggestion assembly, guardrail checks, and human decisions remain in their owned
+  deterministic modules.
 
 ## Anti-goals
 
